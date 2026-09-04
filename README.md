@@ -1,7 +1,6 @@
 # Notifier Java SDK
 
 [![Java](https://img.shields.io/badge/Java-8-orange)](https://adoptium.net/)
-[![Maven Central](https://img.shields.io/maven-central/v/com.softino/notifier-java-sdk)](https://search.maven.org/artifact/com.softino/notifier-java-sdk)
 
 A Java client for the **Notifier** multi-channel notification hub, built as a **drop-in replacement for
 [`kavenegar-java`](https://github.com/kavenegar/kavenegar-java)**. Kavenegar **template sends** map
@@ -29,8 +28,7 @@ api.verifyLookup("+989120000000", "123456", "verify");   // template by name
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
-  - [Maven Central](#maven-central)
-  - [JitPack (private/public GitHub)](#jitpack-privatepublic-github)
+  - [JitPack](#jitpack)
 - [Quick start (send with a template by name)](#quick-start-send-with-a-template-by-name)
 - [Sending with a template (by name)](#sending-with-a-template-by-name)
   - [Pass values positionally (recommended)](#pass-values-positionally-recommended)
@@ -87,17 +85,7 @@ api.verifyLookup("+989120000000", "123456", "verify");   // template by name
 
 ## Installation
 
-### Maven Central
-
-```xml
-<dependency>
-    <groupId>com.softino</groupId>
-    <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.0</version>
-</dependency>
-```
-
-### JitPack (private/public GitHub)
+### JitPack
 
 Built from a GitHub tag:
 
@@ -402,8 +390,7 @@ NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dte
 ## Publishing
 
 - **JitPack** — push a tag (e.g. `1.0.0`); JitPack builds and serves
-  `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`. 
-- **Maven Central (OSSRH)** — `mvn -P release deploy` (attaches sources + javadoc, GPG-signs).
+  `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`.
 
 ## Project layout
 
