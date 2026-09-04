@@ -1,0 +1,33 @@
+# Build output
+target/
+build/
+out/
+*.class
+*.jar
+!mvnw
+!**/src/**/*.jar
+
+# Maven wrapper (keep the wrapper jar if present, ignore the rest of the wrapper dir)
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Other
+*.tmp
+*.swp
