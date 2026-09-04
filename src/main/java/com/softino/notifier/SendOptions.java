@@ -1,7 +1,9 @@
 package com.softino.notifier;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -18,6 +20,7 @@ public final class SendOptions {
     private final String templateId;      // optional template (UUID); content is rendered server-side
     private final String templateName;    // optional template name; resolved server-side
     private final Map<String, Object> templateVars;
+    private final List<Object> templateParams; // ordered values; bound positionally to the template's param_names
     private final String idempotencyKey;
     private final String sendAt;          // ISO-8601 / RFC3339 timestamp for scheduled send
     private final String callbackUrl;
@@ -31,6 +34,8 @@ public final class SendOptions {
         this.templateName = b.templateName;
         this.templateVars = b.templateVars == null ? null
                 : Collections.unmodifiableMap(new LinkedHashMap<String, Object>(b.templateVars));
+        this.templateParams = b.templateParams == null ? null
+                : Collections.unmodifiableList(new ArrayList<Object>(b.templateParams));
         this.idempotencyKey = b.idempotencyKey;
         this.sendAt = b.sendAt;
         this.callbackUrl = b.callbackUrl;
@@ -52,6 +57,7 @@ public final class SendOptions {
     public String getTemplateId() { return templateId; }
     public String getTemplateName() { return templateName; }
     public Map<String, Object> getTemplateVars() { return templateVars; }
+    public List<Object> getTemplateParams() { return templateParams; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getSendAt() { return sendAt; }
     public String getCallbackUrl() { return callbackUrl; }
@@ -64,6 +70,7 @@ public final class SendOptions {
         private String templateId;
         private String templateName;
         private Map<String, Object> templateVars;
+        private List<Object> templateParams;
         private String idempotencyKey;
         private String sendAt;
         private String callbackUrl;
@@ -81,6 +88,16 @@ public final class SendOptions {
         }
         public Builder templateVars(Map<String, Object> templateVars) {
             this.templateVars = templateVars == null ? null : new LinkedHashMap<>(templateVars);
+            return this;
+        }
+        /** Appends an ordered value; bound positionally to the template's declared param_names. */
+        public Builder templateParam(Object value) {
+            if (this.templateParams == null) this.templateParams = new ArrayList<>();
+            this.templateParams.add(value);
+            return this;
+        }
+        public Builder templateParams(List<Object> templateParams) {
+            this.templateParams = templateParams == null ? null : new ArrayList<>(templateParams);
             return this;
         }
         public Builder idempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; return this; }

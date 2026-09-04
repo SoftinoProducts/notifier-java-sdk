@@ -26,6 +26,8 @@ import org.apache.http.util.EntityUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -189,6 +191,48 @@ public class NotifierApi implements AutoCloseable {
         return send(type, recipient, Content.of(""), b.build());
     }
 
+    /**
+     * Sends using a template by name with ordered values bound POSITIONALLY to the template's
+     * declared {@code param_names}. The caller passes values in order — no need to know the
+     * placeholder names in the template body. This is the recommended path for Kavenegar migratees.
+     *
+     * <pre>{@code api.sendTemplateByName(ChannelType.SMS, phone, "betaauth", "123456");}</pre>
+     */
+    public SendResult sendTemplateByName(ChannelType type, String recipient, String templateName, Object... params) {
+        return send(type, recipient, Content.of(""),
+                SendOptions.builder().templateName(templateName).templateParams(toList(params)).build());
+    }
+
+    /** Sends using a template by name with ordered positional params plus extra options. */
+    public SendResult sendTemplateByName(ChannelType type, String recipient, String templateName,
+                                         SendOptions opts, Object... params) {
+        SendOptions.Builder b = SendOptions.builder()
+                .templateName(templateName)
+                .templateParams(toList(params));
+        mergeOptions(b, opts);
+        return send(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Sends using a template by id with ordered values bound positionally to its param_names. */
+    public SendResult sendTemplate(ChannelType type, String recipient, String templateId, Object... params) {
+        return send(type, recipient, Content.of(""),
+                SendOptions.builder().templateId(templateId).templateParams(toList(params)).build());
+    }
+
+    /** Sends using a template by id with ordered positional params plus extra options. */
+    public SendResult sendTemplate(ChannelType type, String recipient, String templateId,
+                                   SendOptions opts, Object... params) {
+        SendOptions.Builder b = SendOptions.builder()
+                .templateId(templateId)
+                .templateParams(toList(params));
+        mergeOptions(b, opts);
+        return send(type, recipient, Content.of(""), b.build());
+    }
+
+    private static List<Object> toList(Object... params) {
+        return params == null ? Collections.emptyList() : Arrays.asList(params);
+    }
+
     private static void mergeOptions(SendOptions.Builder b, SendOptions o) {
         if (o.getChannelId() != null) b.channelId(o.getChannelId());
         if (o.getGroupId() != null) b.groupId(o.getGroupId());
@@ -344,6 +388,13 @@ public class NotifierApi implements AutoCloseable {
         if (o.getTemplateName() != null) body.addProperty("template_name", o.getTemplateName());
         if (o.getTemplateVars() != null && !o.getTemplateVars().isEmpty()) {
             body.add("template_vars", GSON.toJsonTree(o.getTemplateVars()));
+        }
+        if (o.getTemplateParams() != null && !o.getTemplateParams().isEmpty()) {
+            JsonArray arr = new JsonArray();
+            for (Object p : o.getTemplateParams()) {
+                arr.add(GSON.toJsonTree(p));
+            }
+            body.add("template_params", arr);
         }
         if (o.getIdempotencyKey() != null) body.addProperty("idempotency_key", o.getIdempotencyKey());
         if (o.getSendAt() != null) body.addProperty("send_at", o.getSendAt());

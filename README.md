@@ -196,16 +196,31 @@ api.sendTemplateByName(ChannelType.SMS, "+989120000000", "order_confirmed",
 
 ### Template variables
 
-- Vars are sent as a `Map<String, Object>` and substituted server-side by the template's
-  placeholders.
-- Use the **same placeholder names your template defines**. For Kavenegar templates the variable
-  corresponds to the template token; when migrating `verifyLookup(phone, token, name)`, map the
-  positional `token` value to the template's variable name:
+- **Recommended: pass values positionally.** The template declares an ordered `param_names`; the SDK
+  sends a `template_params` array and the backend binds `params[0] → param_names[0]`, etc. You never
+  need to know the placeholder names in the template body:
 
 ```java
-// verifyLookup(phone, otp, "betaauth")  →  sendTemplateByName(..., "betaauth", {"token": otp})
+// Positional (Option B) — recommended
+api.sendTemplateByName(ChannelType.SMS, phone, "betaauth", "123456");                 // one param
+api.sendTemplateByName(ChannelType.SMS, phone, "salesuccess", "50000", "Tehran");     // two params
+```
+
+- **Or by name (map).** Vars are sent as a `Map<String, Object>` and substituted server-side by the
+  template's placeholders. Use the **same placeholder names your template defines**:
+
+```java
 api.sendTemplateByName(ChannelType.SMS, phone, "betaauth",
         Collections.singletonMap("token", otp));
+```
+
+**Migrating from Kavenegar:** `verifyLookup(phone, token, name)` sends its token values **positionally**,
+so a migrated template must declare its `param_names` to match (e.g. `["token"]`, or
+`["token","token2","token3"]`). For a template that uses name-based params instead, use the map
+form on the core client:
+
+```java
+api.sendTemplateByName(ChannelType.SMS, phone, "salesuccess", Map.of("amount", amt, "shop", shop));
 ```
 
 ### Locale

@@ -199,7 +199,9 @@ public class KavenegarApi {
     // ------------------------------------------------------------------
 
     public SendResult verifyLookup(String receptor, String token, String token2, String token3, String template) {
-        return execute(() -> toSend(core.sendTemplateByName(ChannelType.SMS, receptor, template, tokens(token, token2, token3))));
+        // Positional: values are sent as an ordered template_params array and bound to the
+        // template's declared param_names (mirrors Kavenegar's %token%, %token2%, %token3%).
+        return execute(() -> toSend(core.sendTemplateByName(ChannelType.SMS, receptor, template, nonEmptyTokens(token, token2, token3))));
     }
 
     public SendResult verifyLookup(String receptor, String token, String token2, String token3,
@@ -227,6 +229,15 @@ public class KavenegarApi {
         if (token2 != null && !token2.isEmpty()) vars.put("token2", token2);
         if (token3 != null && !token3.isEmpty()) vars.put("token3", token3);
         return vars;
+    }
+
+    /** Non-empty token values, in order, for positional template binding. */
+    private static Object[] nonEmptyTokens(String token, String token2, String token3) {
+        java.util.List<Object> out = new java.util.ArrayList<>();
+        if (token != null && !token.isEmpty()) out.add(token);
+        if (token2 != null && !token2.isEmpty()) out.add(token2);
+        if (token3 != null && !token3.isEmpty()) out.add(token3);
+        return out.toArray();
     }
 
     // ------------------------------------------------------------------

@@ -224,4 +224,14 @@ public class ContractTest {
         assertEquals("cursor-1", page.getNextCursor());
         assertTrue(page.hasNext());
     }
+
+    @Test
+    public void sendTemplateByNamePositional_emitsTemplateParams() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth", "123456", "extra");
+        String body = lastRequestBody.get();
+        assertTrue("should reference template by name", body.contains("\"template_name\":\"betaauth\""));
+        assertTrue("positional params should be sent as template_params array",
+                body.contains("\"template_params\":[\"123456\",\"extra\"]"));
+    }
 }
