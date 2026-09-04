@@ -43,6 +43,7 @@ api.verifyLookup("+989120000000", "123456", "verify");
 - [Channels](#channels)
   - [Built-in channel types](#built-in-channel-types)
   - [Typed channel accessors](#typed-channel-accessors)
+  - [Sending via Bale](#sending-via-bale)
   - [Extending to new channels](#extending-to-new-channels)
 - [Kavenegar compatibility](#kavenegar-compatibility)
 - [Error handling](#error-handling)
@@ -211,14 +212,36 @@ System.out.println("batch=" + b.getBatchId() + " count=" + b.getCount());
 ### Status lookup
 
 ```java
-// By the Notifier UUID returned from send()
+// --- 1. Send, then read the immediate result -------------------------------
+SendResult r = api.send(ChannelType.SMS, "+989120000000", Content.of("Your OTP is 1234"));
+System.out.println("notification id = " + r.getId());           // Notifier UUID
+System.out.println("status          = " + r.getStatus());       // e.g. "queued"
+System.out.println("provider        = " + r.getProvider());     // e.g. "kavenegar"
+System.out.println("provider msg id = " + r.getProviderMessageId());
+
+// --- 2. Poll delivery status by the Notifier UUID --------------------------
 StatusResult byId = api.status(r.getId());
+if (byId.isDelivered()) { /* delivered */ }
+else if (byId.isFailed()) { /* handle failure */ }
+else if (byId.isQueued()) { /* still in flight — poll again */ }
+System.out.println("provider msg id = " + byId.getProviderMessageId() + " sent at " + byId.getSentAt());
 
-// By the provider message id (Kavenegar messageid / SMS.ir messageId)
-StatusResult byProvider = api.statusByProviderMessageId("560152226");
+// --- 3. Look up by the provider's own message id ----------------------------
+// (no Notifier UUID required): Kavenegar messageid / SMS.ir messageId / Bale id
+StatusResult byProvider = api.statusByProviderMessageId(r.getProviderMessageId());
+System.out.println(byProvider.getStatus() + " @ " + byProvider.getSentAt());
 
-if (byId.isDelivered()) { /* ... */ }
-if (byId.isFailed())    { /* handle failure */ }
+// --- 4. Same flow through the Kavenegar facade ------------------------------
+import com.softino.notifier.kavenegar.KavenegarApi;
+import com.softino.notifier.kavenegar.models.SendResult;
+import com.softino.notifier.kavenegar.models.StatusResult;
+import com.softino.notifier.kavenegar.enums.MessageStatus;
+
+KavenegarApi k = new KavenegarApi("YOUR-KEY");
+SendResult kr = k.verifyLookup("+989120000000", "123456", "verify");
+long msgId = kr.getMessageId();               // provider message id (Long)
+StatusResult ks = k.status(msgId);
+if (ks.getStatus() == MessageStatus.Delivered) { /* ... */ }
 ```
 
 ### History / listing
@@ -266,6 +289,36 @@ api.email().send("to@example.com", "Subject", "Body");
 api.telegram().send("chatId", "text");
 api.slack().send("target", "text");
 api.bale().send("chatId", "text");
+```
+
+### Sending via Bale
+
+Bale (Iranian messenger, Safir gateway) is a first-class channel. Use the typed accessor at
+`api.bale()` or the generic `api.send(ChannelType.BALE, ...)`; the recipient is a **Bale chat id**.
+
+```java
+// Typed accessor — plain text
+SendResult r = api.bale().send("1234567890", "سلام، کد شما 1234 است");
+System.out.println("notification id = " + r.getId() + " status = " + r.getStatus());
+
+// With options (callback, metadata, locale, …)
+api.bale().send("1234567890", "Your order is confirmed",
+        SendOptions.builder()
+                .callbackUrl("https://your-app/bale-callback")
+                .metadata(Collections.singletonMap("orderId", "12345"))
+                .build());
+
+// Equivalent generic form (channel-agnostic)
+api.send(ChannelType.BALE, "1234567890", Content.of("Hello from Bale"));
+
+// Template-driven Bale message (by name — resolved against the tenant's Bale templates)
+api.sendTemplateByName(ChannelType.BALE, "1234567890", "order_confirmed",
+        Collections.singletonMap("orderId", "12345"));
+
+// Poll the delivery status of a Bale message
+StatusResult st = api.status(r.getId());
+if (st.isDelivered()) { /* delivered on Bale */ }
+else if (st.isFailed()) { /* handle failure */ }
 ```
 
 ### Extending to new channels
