@@ -15,7 +15,7 @@ import ir.kavenegar.api.KavenegarApi;
 import com.softino.notifier.kavenegar.KavenegarApi;
 
 KavenegarApi api = new KavenegarApi("YOUR-KEY");
-api.verifyLookup("+989120000000", "123456", "betaauth");   // template by name
+api.verifyLookup("+989120000000", "123456", "verify");   // template by name
 ```
 
 > When migrating, replace the `com.kavenegar.sdk.*` import prefix with `com.softino.notifier.kavenegar.*`
@@ -39,7 +39,7 @@ api.verifyLookup("+989120000000", "123456", "betaauth");   // template by name
 - [Migrating from the Kavenegar SDK](#migrating-from-the-kavenegar-sdk)
   - [The facade](#the-facade)
   - [Method mapping](#method-mapping)
-  - [Template names used by trade-hub](#template-names-used-by-trade-hub)
+  - [Example template names](#example-template-names)
 - [Other ways to send](#other-ways-to-send)
   - [Arbitrary body](#arbitrary-body)
   - [Template by id](#template-by-id)
@@ -130,7 +130,7 @@ import java.util.Collections;
 NotifierApi api = new NotifierApi("YOUR-API-KEY");
 
 // Send by template name; values bound positionally to the template's declared param_names.
-SendResult r = api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth", "123456");
+SendResult r = api.sendTemplateByName(ChannelType.SMS, "+989120000000", "verify", "123456");
 
 System.out.println("notification id = " + r.getId());      // Notifier UUID
 System.out.println("status          = " + r.getStatus());  // e.g. "queued"
@@ -157,13 +157,13 @@ against the tenant's templates for the channel + locale, renders it, and dispatc
 
 ```java
 // Values bind to param_names in order — no need to know placeholder names.
-api.sendTemplateByName(ChannelType.SMS, phone, "betaauth", "123456");                // 1 param
-api.sendTemplateByName(ChannelType.SMS, phone, "salesuccess", "50000", "Tehran");    // 2 params
+api.sendTemplateByName(ChannelType.SMS, phone, "verify", "123456");                // 1 param
+api.sendTemplateByName(ChannelType.SMS, phone, "order_notice", "50000", "Tehran");    // 2 params
 
 // With options (SendOptions comes before the positional params)
 api.sendTemplateByName(ChannelType.SMS, phone, "order_confirmed",
         SendOptions.builder().locale("fa").callbackUrl("https://your-app/cb")
-                .metadata(Collections.singletonMap("source", "trade-hub"))
+                .metadata(Collections.singletonMap("source", "web"))
                 .idempotencyKey("order-12345").build(),
         "12345");
 ```
@@ -173,7 +173,7 @@ api.sendTemplateByName(ChannelType.SMS, phone, "order_confirmed",
 Use this when you know (or prefer) the placeholder names:
 
 ```java
-api.sendTemplateByName(ChannelType.SMS, phone, "betaauth", Collections.singletonMap("token", otp));
+api.sendTemplateByName(ChannelType.SMS, phone, "verify", Collections.singletonMap("token", otp));
 ```
 
 ### Locale
@@ -204,7 +204,7 @@ import com.softino.notifier.kavenegar.enums.*;
 KavenegarApi api = new KavenegarApi("YOUR-KEY");
 
 // Template send (by name) — same as before
-SendResult r = api.verifyLookup("+989120000000", "123456", "betaauth");
+SendResult r = api.verifyLookup("+989120000000", "123456", "verify");
 String message = r.getMessage();    // rendered text
 long   msgId   = r.getMessageId();  // provider message id (Long)
 int    status  = r.getStatus();
@@ -238,29 +238,30 @@ api.send("100085902", "+989120000000", "hello");   // plain (non-template)
 Methods that map to features Notifier doesn't implement still return the kavenegar type but throw a
 `kavenegar.excepctions.BaseException`, so existing `catch (BaseException)` logic keeps working.
 
-### Template names used by trade-hub
+### Example template names
 
-| Template name | Trade-hub method | Notifier call |
+A template name is just a string — the important thing is that your Notifier template declares the
+`param_names` in the order you pass values. Common patterns:
+
+| Template name | Params (in order) | Notifier call |
 |---|---|---|
-| `betaauth` | `sendKYCOTP` / `sendLoginOTP` | `sendTemplateByName(SMS, phone, "betaauth", …)` |
-| `salerequest` | `sendOTPSMS` | `sendTemplateByName(SMS, phone, "salerequest", …)` |
-| `salesuccess` | `sendSaleSuccess` | `sendTemplateByName(SMS, phone, "salesuccess", …)` |
-| `salereverse` | `sendRefundMsg` | `sendTemplateByName(SMS, phone, "salereverse", …)` |
+| `verify` | `token` | `sendTemplateByName(SMS, phone, "verify", "123456")` |
+| `order_notice` | `amount`, `region` | `sendTemplateByName(SMS, phone, "order_notice", "50000", "Tehran")` |
 
-Trade-hub's `KavenegarSMS.sendLoginOTP`, before and after:
+A generic `verifyLookup` before and after — only the import changes:
 
 ```java
 // BEFORE (com.kavenegar.sdk)
 KavenegarApi api = new KavenegarApi(apiKey);
-public void sendLoginOTP(String otp, String phone) {
-    api.verifyLookup(phone, otp, templateLoginOtp);   // templateLoginOtp = "betaauth"
+public void sendVerificationCode(String code, String phone) {
+    api.verifyLookup(phone, code, templateName);   // templateName = "verify"
 }
 
 // AFTER (notifier-java-sdk) — keep verifyLookup, swap the import prefix
 com.softino.notifier.kavenegar.KavenegarApi api =
         new com.softino.notifier.kavenegar.KavenegarApi(apiKey);
-public void sendLoginOTP(String otp, String phone) {
-    api.verifyLookup(phone, otp, templateLoginOtp);   // unchanged
+public void sendVerificationCode(String code, String phone) {
+    api.verifyLookup(phone, code, templateName);   // unchanged
 }
 ```
 
@@ -359,7 +360,7 @@ Exceptions come from `com.softino.notifier.exception` (or `kavenegar.excepctions
 
 ```java
 try {
-    api.sendTemplateByName(ChannelType.SMS, recipient, "betaauth", "123456");
+    api.sendTemplateByName(ChannelType.SMS, recipient, "verify", "123456");
 } catch (ApiException e) {   // business error — e.getCode()
 } catch (HttpException e) {  // network/HTTP error — e.getCode()
 }
@@ -401,7 +402,7 @@ NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dte
 ## Publishing
 
 - **JitPack** — push a tag (e.g. `1.0.0`); JitPack builds and serves
-  `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`. This is the path used by trade-hub.
+  `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`. 
 - **Maven Central (OSSRH)** — `mvn -P release deploy` (attaches sources + javadoc, GPG-signs).
 
 ## Project layout
@@ -418,7 +419,7 @@ src/main/java/com/softino/notifier/
   channel/                      # Email / Telegram / Slack / Bale accessors
   exception/                    # NotifierException / ApiException / HttpException
   kavenegar/                    # Kavenegar facade (models/enums/exceptions)
-src/test/java/...               # SDK, contract, and trade-hub-compatibility tests
+src/test/java/...               # SDK, contract, and Kavenegar-compatibility tests
 ```
 
 ---
