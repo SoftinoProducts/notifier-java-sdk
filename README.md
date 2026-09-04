@@ -210,6 +210,11 @@ api.send("100085902", "+989120000000", "hello");   // plain (non-template)
 > `["token","token2","token3"]`. If a template uses different placeholder names, use the map form
 > `sendTemplateByName(channel, phone, name, vars)` instead of `verifyLookup`.
 
+> **Route by group name too.** Use `"groupName:templateName"` to send through a channel group
+> referenced by name: `api.verifyLookup(phone, "123456", "sms-group:verify")`. The part before the
+> `:` is the group name; the rest is the template name. Equivalently, on the core client:
+> `api.sendTemplateByName(ChannelType.SMS, phone, "verify", SendOptions.builder().groupName("sms-group").build(), "123456")`.
+
 ### Method mapping
 
 | Kavenegar (`com.kavenegar.sdk.*`) | Notifier facade (`com.softino.notifier.kavenegar`) |
