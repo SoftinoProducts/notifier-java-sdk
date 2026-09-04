@@ -4,48 +4,67 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.softino/notifier-java-sdk)](https://search.maven.org/artifact/com.softino/notifier-java-sdk)
 [![License](https://img.shields.io/badge/License-Proprietary-blue)](LICENSE)
 
-A channel-agnostic Java client for the **Notifier** multi-channel notification hub.
+A Java client for the **Notifier** multi-channel notification hub, built as a **drop-in replacement
+for [`kavenegar-java`](https://github.com/kavenegar/kavenegar-java)**.
 
-It is designed to be a **drop-in replacement for [`kavenegar-java`](https://github.com/kavenegar/kavenegar-java)**
-— existing teams that used Kavenegar can switch to Notifier by changing **one import**, keeping the
-same method calls and result types. It is intentionally **not** limited to SMS: the same surface
-sends **email, web-push, Telegram, Slack, Bale and any future channel**.
+If you currently use the Kavenegar SDK, you can migrate by changing **one import** and keeping your
+existing `verifyLookup`/`send`/`status` calls. Kavenegar **template sends** map directly to Notifier's
+**send-with-template-by-name** — the headline feature of this SDK.
 
 ```java
 // Before (kavenegar-java)
 import ir.kavenegar.api.KavenegarApi;
 KavenegarApi api = new KavenegarApi("YOUR-KEY");
-api.verifyLookup("+989120000000", "123456", "verify");
+api.verifyLookup("+989120000000", "123456", "betaauth");   // template by name
 
-// After (notifier-java-sdk) — same calls, one import changed
+// After (notifier-java-sdk) — one import changed, template name kept
 import com.softino.notifier.kavenegar.KavenegarApi;
 KavenegarApi api = new KavenegarApi("YOUR-KEY");
-api.verifyLookup("+989120000000", "123456", "verify");
+api.verifyLookup("+989120000000", "123456", "betaauth");   // still works
 ```
+
+Or, using the channel-agnostic core directly:
+
+```java
+import com.softino.notifier.*;
+NotifierApi api = new NotifierApi("YOUR-API-KEY");
+api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth",
+        Collections.singletonMap("token", "123456"));       // same template name
+```
+
+> The **template name** is the contract between the two SDKs: a Kavenegar template name
+> (e.g. `betaauth`, `salerequest`, `salesuccess`) is the exact name you create in Notifier and pass
+> to `sendTemplateByName`.
 
 ---
 
 ## Table of contents
 
+- [Why migrate from kavenegar-java](#why-migrate-from-kavenegar-java)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
-  - [JitPack (recommended for private/public GitHub)](#jitpack-recommended-for-privatepublic-github)
   - [Maven Central](#maven-central)
-- [Quick start](#quick-start)
-- [Core API](#core-api)
+  - [JitPack (private/public GitHub)](#jitpack-privatepublic-github)
+- [Quick start (send with a template by name)](#quick-start-send-with-a-template-by-name)
+- [Sending with a template (by name)](#sending-with-a-template-by-name)
+  - [Template variables](#template-variables)
+  - [Locale](#locale)
+- [Migrating from the Kavenegar SDK](#migrating-from-the-kavenegar-sdk)
+  - [The facade](#the-facade)
+  - [Kavenegar method → Notifier method](#kavenegar-method--notifier-method)
+  - [verifyLookup template names](#verifylookup-template-names)
+  - [Trade-hub example](#trade-hub-example)
+- [Other send options](#other-send-options)
   - [Sending an arbitrary body](#sending-an-arbitrary-body)
   - [Sending via a template (by id)](#sending-via-a-template-by-id)
-  - [Sending via a template (by name)](#sending-via-a-template-by-name)
   - [Bulk send](#bulk-send)
-  - [Status lookup](#status-lookup)
-  - [History / listing](#history--listing)
+- [Status lookup](#status-lookup)
+- [History / listing](#history--listing)
 - [Channels](#channels)
   - [Built-in channel types](#built-in-channel-types)
-  - [Typed channel accessors](#typed-channel-accessors)
   - [Sending via Bale](#sending-via-bale)
   - [Extending to new channels](#extending-to-new-channels)
-- [Kavenegar compatibility](#kavenegar-compatibility)
 - [Error handling](#error-handling)
 - [Status model](#status-model)
 - [Configuration](#configuration)
@@ -55,69 +74,40 @@ api.verifyLookup("+989120000000", "123456", "verify");
 
 ---
 
+## Why migrate from kavenegar-java
+
+- **One import change.** `com.softino.notifier.kavenegar.KavenegarApi` mirrors the kavenegar-java
+  surface, so `verifyLookup`/`send`/`status` keep compiling.
+- **Template-by-name is first-class.** The template name you already use with `verifyLookup` is
+  passed straight through to Notifier.
+- **Same types.** The facade returns `kavenegar.models.*`, `kavenegar.enums.*` and
+  `kavenegar.excepctions.*`, so your `MessageStatus`/`SendResult`/`HttpException` handling is unchanged.
+- **More channels.** The same client also sends email, web-push, Telegram, Slack, Bale and any future
+  channel — not just SMS.
+
 ## Features
 
-- **One SDK for every channel** — send SMS/email/web-push/Telegram/Slack/Bale (and more) with the
-  same methods; a channel is just a `ChannelType` value.
+- **Send with template by name** — `sendTemplateByName(channel, recipient, name, vars)`, the primary
+  way to send; the template name is resolved server-side against your tenant's templates.
 - **Kavenegar drop-in** — a `com.softino.notifier.kavenegar.KavenegarApi` facade with identical
-  signatures and result types, so migrating callers only change the import.
-- **Templates, by id or by name** — backend-rendered content with variable substitution.
-- **Bulk send** — many recipients in a single request (backend fan-out).
+  signatures and result types.
+- **Templates by id or name** — backend-rendered content with variable substitution.
+- **Bulk send** — many recipients in one request (backend fan-out).
 - **Status tracking** — by Notifier UUID **or** by provider message id (Kavenegar `messageid`,
-  SMS.ir `messageId`, …).
+  SMS.ir `messageId`, Bale id).
 - **History** — paginated, filterable listing with an opaque cursor.
-- **Idempotency, scheduling, callbacks, metadata, locale** — carried through `SendOptions`.
-- **Java 8** — compiled to target Java 8, so it runs on any JDK 8+ without module hacks. (The build
-  uses `source`/`target` 1.8 so it also works when built with a real JDK 8 toolchain. Set a
-  `--release 8` toolchain in your IDE to catch accidental Java 9+ API usage at compile time.)
+- **Idempotency, scheduling, callbacks, metadata, locale** — via `SendOptions`.
+- **Java 8** — a plain Java 8 jar.
 
 ## Requirements
 
-- **Java 8+** (the artifact is a plain Java 8 jar).
+- **Java 8+**.
 - **Maven** 3.6+ (to build from source) — or just declare it as a dependency.
 - A **Notifier API key** from your tenant, and optionally a custom base URL.
 
 ## Installation
 
-### JitPack (recommended for private/public GitHub)
-
-The release is published from a GitHub tag, so it installs through
-[JitPack](https://jitpack.io). Add the repository and dependency:
-
-**Maven**
-
-```xml
-<repositories>
-    <repository>
-        <id>jitpack.io</id>
-        <url>https://jitpack.io</url>
-    </repository>
-</repositories>
-
-<dependency>
-    <groupId>com.github.SoftinoProducts</groupId>
-    <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.0</version>
-</dependency>
-```
-
-**Gradle**
-
-```groovy
-repositories { maven { url 'https://jitpack.io' } }
-
-dependencies {
-    implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.0'
-}
-```
-
-> JitPack builds the artifact from the tag on demand. The repo must be reachable by JitPack
-> (public, or via a JitPack token for a private repo). The dependency `version` matches the git tag.
-
 ### Maven Central
-
-The project also ships a `release` profile that attaches sources + javadoc and GPG-signs for
-OSSRH/Maven Central. Once published, the coordinates are:
 
 ```xml
 <dependency>
@@ -127,73 +117,218 @@ OSSRH/Maven Central. Once published, the coordinates are:
 </dependency>
 ```
 
-## Quick start
+### JitPack (private/public GitHub)
+
+The release is built from a GitHub tag by [JitPack](https://jitpack.io):
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+<dependency>
+    <groupId>com.github.SoftinoProducts</groupId>
+    <artifactId>notifier-java-sdk</artifactId>
+    <version>1.0.0</version>
+</dependency>
+```
+
+Gradle:
+
+```groovy
+repositories { maven { url 'https://jitpack.io' } }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.0' }
+```
+
+---
+
+## Quick start (send with a template by name)
 
 ```java
 import com.softino.notifier.*;
+import java.util.HashMap;
+import java.util.Map;
 
 NotifierApi api = new NotifierApi("YOUR-API-KEY");
 
-// 1. Send a plain SMS
-SendResult r = api.send(ChannelType.SMS, "+989120000000", Content.of("Your OTP is 1234"));
+// Send an SMS using a template you created in Notifier, referenced by NAME.
+Map<String, Object> vars = new HashMap<>();
+vars.put("token", "123456");          // substituted into the template server-side
 
-// 2. Send an email with a subject
-api.send(ChannelType.EMAIL, "customer@example.com", Content.of("Invoice", "Please see the attached invoice."));
+SendResult r = api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth", vars);
 
-// 3. Send a web-push
-api.send(ChannelType.WEBPUSH, "device-token-or-user-id", Content.of("You have a new message"));
+System.out.println("notification id = " + r.getId());     // Notifier UUID
+System.out.println("status          = " + r.getStatus()); // e.g. "queued"
+System.out.println("provider msg id = " + r.getProviderMessageId());
 
-// 4. Print the notification id (to poll status later)
-System.out.println(r.getId());
+// Poll the delivery status
+StatusResult s = api.status(r.getId());
+if (s.isDelivered()) { /* delivered */ }
 ```
 
-`NotifierApi` is `AutoCloseable`; call `close()` when the client is no longer needed (it shuts
-down the underlying HTTP connection pool).
+`NotifierApi` is `AutoCloseable`; call `close()` when you're done (releases the HTTP connection pool).
 
-## Core API
+---
+
+## Sending with a template (by name)
+
+This is the recommended way to send. You reference a template by **name** (the same name you use in
+Kavenegar); the Notifier backend resolves it against the tenant's templates for the channel + locale,
+renders it, and dispatches.
+
+```java
+// Template by name + variables
+api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth",
+        Collections.singletonMap("token", "123456"));
+
+// With options (locale, callback, metadata, idempotency, schedule)
+api.sendTemplateByName(ChannelType.SMS, "+989120000000", "order_confirmed",
+        Collections.singletonMap("orderId", "12345"),
+        SendOptions.builder()
+                .locale("fa")
+                .callbackUrl("https://your-app/sms-callback")
+                .metadata(Collections.singletonMap("source", "trade-hub"))
+                .idempotencyKey("order-12345")
+                .build());
+```
+
+### Template variables
+
+- Vars are sent as a `Map<String, Object>` and substituted server-side by the template's
+  placeholders.
+- Use the **same placeholder names your template defines**. For Kavenegar templates the variable
+  corresponds to the template token; when migrating `verifyLookup(phone, token, name)`, map the
+  positional `token` value to the template's variable name:
+
+```java
+// verifyLookup(phone, otp, "betaauth")  →  sendTemplateByName(..., "betaauth", {"token": otp})
+api.sendTemplateByName(ChannelType.SMS, phone, "betaauth",
+        Collections.singletonMap("token", otp));
+```
+
+### Locale
+
+A template is resolved by `(channel, name, locale)`. The default locale is `fa`. Pass `.locale(...)`
+in `SendOptions` to select a different one:
+
+```java
+api.sendTemplateByName(ChannelType.SMS, phone, "login_otp",
+        Collections.singletonMap("token", otp),
+        SendOptions.builder().locale("en").build());
+```
+
+---
+
+## Migrating from the Kavenegar SDK
+
+### The facade
+
+Keep your code shape and use `com.softino.notifier.kavenegar.KavenegarApi`. It returns the
+kavenegar `models.*`/`enums.*`/`excepctions.*` types, so you mostly change one import:
+
+```java
+import com.softino.notifier.kavenegar.KavenegarApi;
+import com.softino.notifier.kavenegar.models.*;
+import com.softino.notifier.kavenegar.enums.*;
+import com.softino.notifier.kavenegar.excepctions.*;
+
+KavenegarApi api = new KavenegarApi("YOUR-KEY");
+
+// Template send (by name) — same as before
+SendResult r = api.verifyLookup("+989120000000", "123456", "betaauth");
+String message = r.getMessage();   // rendered message text
+long   msgId   = r.getMessageId(); // provider message id (Long)
+int    status  = r.getStatus();    // int status
+
+// Status by the provider message id
+StatusResult s = api.status(msgId);
+MessageStatus ms = s.getStatus();      // enum (e.g. Delivered)
+String text = s.getStatusText();       // mapped statusText
+
+// Plain send (non-template)
+api.send("100085902", "+989120000000", "hello");
+```
+
+### Kavenegar method → Notifier method
+
+| Kavenegar (`kavenegar-java`) | Notifier facade (`notifier-java-sdk`) | Notes |
+|---|---|---|
+| `verifyLookup(receptor, token, template)` | `verifyLookup(receptor, token, template)` | **unchanged** — template by name |
+| `send(sender, receptor, message)` | `send(sender, receptor, message)` | unchanged (plain body) |
+| `status(messageId /*long*/)` | `status(messageId /*long*/)` | returns kavenegar `StatusResult` |
+| `statusLocalMessageId(localId)` | `statusLocalMessageId(localId)` | returns kavenegar model |
+| `sendArray(...)` | `sendArray(...)` | unchanged |
+| `countOutbox(...)` / `countInbox(...)` | `countOutbox(...)` / `countInbox(...)` | returns kavenegar model |
+| `accountInfo()` | `accountInfo()` | returns kavenegar model |
+| `callMakeTTS(...)` | `callMakeTTS(...)` | unchanged |
+
+> Methods that map to Notifier features Notifier doesn't implement still return the kavenegar type
+> but throw a `kavenegar.excepctions.BaseException`, so your existing `catch (BaseException)`
+> logic keeps working.
+
+### verifyLookup template names
+
+`verifyLookup(receptor, token, templateName)` passes `templateName` straight through as the Notifier
+**template name**. You must create a template in Notifier with that exact name (and matching channel
+type + locale). For example, the names used by the trade-hub project:
+
+| Template name | Trade-hub method | Notifier call |
+|---|---|---|
+| `betaauth` | `sendKYCOTP` / `sendLoginOTP` | `sendTemplateByName(SMS, phone, "betaauth", vars)` |
+| `salerequest` | `sendOTPSMS` | `sendTemplateByName(SMS, phone, "salerequest", vars)` |
+| `salesuccess` | `sendSaleSuccess` | `sendTemplateByName(SMS, phone, "salesuccess", vars)` |
+| `salereverse` | `sendRefundMsg` | `sendTemplateByName(SMS, phone, "salereverse", vars)` |
+
+### Trade-hub example
+
+Here is the `KavenegarSMS` pattern from trade-hub (`sendLoginOTP`), before and after:
+
+```java
+// BEFORE (kavenegar-java)
+private final KavenegarApi api = new KavenegarApi(apiKey);
+public void sendLoginOTP(String otp, String phone) {
+    api.verifyLookup(phone, otp, templateLoginOtp);   // templateLoginOtp = "betaauth"
+}
+
+// AFTER (notifier-java-sdk) — keep verifyLookup, one import changed
+private final com.softino.notifier.kavenegar.KavenegarApi api =
+        new com.softino.notifier.kavenegar.KavenegarApi(apiKey);
+public void sendLoginOTP(String otp, String phone) {
+    api.verifyLookup(phone, otp, templateLoginOtp);   // unchanged
+}
+```
+
+To use the channel-agnostic core instead of the facade:
+
+```java
+public void sendLoginOTP(String otp, String phone) {
+    notifierApi.sendTemplateByName(ChannelType.SMS, phone, templateLoginOtp,
+            Collections.singletonMap("token", otp));
+}
+```
+
+---
+
+## Other send options
 
 ### Sending an arbitrary body
 
 ```java
-// Simple body
-api.send(ChannelType.SMS, recipient, Content.of("Hello"));
-
-// Body + subject (email) and options
-SendOptions opts = SendOptions.builder()
-        .channelId("optional-channel-uuid")   // pin to a specific channel
-        .groupId("optional-lb-group-uuid")    // route via a channel group (load balancing)
-        .idempotencyKey("order-123")          // deduplicate retries
-        .sendAt("2026-01-01T09:00:00Z")       // schedule for later
-        .callbackUrl("https://your-app/webhook") // receive status callbacks
-        .locale("en")                          // template locale
-        .metadata(Collections.singletonMap("orderId", "12345"))
-        .build();
-
-SendResult r = api.send(ChannelType.SMS, recipient, Content.of("Your order is confirmed"), opts);
+// Plain body (no template)
+SendResult r = api.send(ChannelType.SMS, recipient, Content.of("Hello"));
+api.send(ChannelType.EMAIL, "to@example.com", Content.of("Invoice", "See attached."));
+api.send(ChannelType.WEBPUSH, "token", Content.of("New message"));
 ```
 
 ### Sending via a template (by id)
 
-```java
-api.sendTemplate(
-        ChannelType.SMS,
-        "+989120000000",
-        "otp-template",                                  // template UUID
-        Collections.singletonMap("token", "123456"),     // vars substituted server-side
-        SendOptions.builder().locale("en").build());
-```
-
-### Sending via a template (by name)
-
-Use this when you only have a template **name** (e.g. a Kavenegar template name). The backend
-resolves it against the tenant's templates for the channel + locale.
+Prefer by name unless you hold the template UUID:
 
 ```java
-api.sendTemplateByName(
-        ChannelType.SMS,
-        "+989120000000",
-        "betaauth",
-        Collections.singletonMap("token", "777"));
+api.sendTemplate(ChannelType.SMS, "+989120000000", "otp-template-uuid",
+        Collections.singletonMap("token", "123456"));
 ```
 
 ### Bulk send
@@ -209,42 +344,20 @@ BulkResult b = api.bulk(ChannelType.SMS, messages);
 System.out.println("batch=" + b.getBatchId() + " count=" + b.getCount());
 ```
 
-### Status lookup
+## Status lookup
 
 ```java
-// --- 1. Send, then read the immediate result -------------------------------
-SendResult r = api.send(ChannelType.SMS, "+989120000000", Content.of("Your OTP is 1234"));
-System.out.println("notification id = " + r.getId());           // Notifier UUID
-System.out.println("status          = " + r.getStatus());       // e.g. "queued"
-System.out.println("provider        = " + r.getProvider());     // e.g. "kavenegar"
-System.out.println("provider msg id = " + r.getProviderMessageId());
-
-// --- 2. Poll delivery status by the Notifier UUID --------------------------
+// By the Notifier UUID from send()
 StatusResult byId = api.status(r.getId());
 if (byId.isDelivered()) { /* delivered */ }
 else if (byId.isFailed()) { /* handle failure */ }
-else if (byId.isQueued()) { /* still in flight — poll again */ }
-System.out.println("provider msg id = " + byId.getProviderMessageId() + " sent at " + byId.getSentAt());
+else if (byId.isQueued()) { /* in flight — poll again */ }
 
-// --- 3. Look up by the provider's own message id ----------------------------
-// (no Notifier UUID required): Kavenegar messageid / SMS.ir messageId / Bale id
+// By the provider's message id (Kavenegar messageid / SMS.ir messageId / Bale id)
 StatusResult byProvider = api.statusByProviderMessageId(r.getProviderMessageId());
-System.out.println(byProvider.getStatus() + " @ " + byProvider.getSentAt());
-
-// --- 4. Same flow through the Kavenegar facade ------------------------------
-import com.softino.notifier.kavenegar.KavenegarApi;
-import com.softino.notifier.kavenegar.models.SendResult;
-import com.softino.notifier.kavenegar.models.StatusResult;
-import com.softino.notifier.kavenegar.enums.MessageStatus;
-
-KavenegarApi k = new KavenegarApi("YOUR-KEY");
-SendResult kr = k.verifyLookup("+989120000000", "123456", "verify");
-long msgId = kr.getMessageId();               // provider message id (Long)
-StatusResult ks = k.status(msgId);
-if (ks.getStatus() == MessageStatus.Delivered) { /* ... */ }
 ```
 
-### History / listing
+## History / listing
 
 ```java
 HistoryPage page = api.listNotifications(
@@ -256,20 +369,13 @@ HistoryPage page = api.listNotifications(
                 .to("2026-01-31T23:59:59Z")
                 .build());
 
-for (SendResult item : page.getItems()) {
-    System.out.println(item.getId() + " -> " + item.getStatus());
-}
-if (page.hasNext()) {
-    // continue with the opaque cursor
-    api.listNotifications(HistoryQuery.builder().after(page.getNextCursor()).build());
-}
+for (SendResult item : page.getItems()) System.out.println(item.getId() + " -> " + item.getStatus());
+if (page.hasNext()) api.listNotifications(HistoryQuery.builder().after(page.getNextCursor()).build());
 ```
 
 ## Channels
 
-### Built-in channel types
-
-`ChannelType` exposes constants for the supported channels. All are open/enumerable:
+`ChannelType` exposes constants for the supported channels; all are open/enumerable:
 
 | Constant | Value | Notes |
 |---|---|---|
@@ -280,172 +386,101 @@ if (page.hasNext()) {
 | `ChannelType.SLACK` | `slack` | |
 | `ChannelType.BALE` | `bale` | Safir / Bale messenger |
 
-### Typed channel accessors
-
-The generic `send()` covers every channel, but a few convenience accessors exist:
-
-```java
-api.email().send("to@example.com", "Subject", "Body");
-api.telegram().send("chatId", "text");
-api.slack().send("target", "text");
-api.bale().send("chatId", "text");
-```
-
 ### Sending via Bale
 
-Bale (Iranian messenger, Safir gateway) is a first-class channel. Use the typed accessor at
-`api.bale()` or the generic `api.send(ChannelType.BALE, ...)`; the recipient is a **Bale chat id**.
+The recipient is a **Bale chat id**; use the typed accessor or the generic form:
 
 ```java
-// Typed accessor — plain text
 SendResult r = api.bale().send("1234567890", "سلام، کد شما 1234 است");
-System.out.println("notification id = " + r.getId() + " status = " + r.getStatus());
 
-// With options (callback, metadata, locale, …)
-api.bale().send("1234567890", "Your order is confirmed",
-        SendOptions.builder()
-                .callbackUrl("https://your-app/bale-callback")
-                .metadata(Collections.singletonMap("orderId", "12345"))
-                .build());
-
-// Equivalent generic form (channel-agnostic)
-api.send(ChannelType.BALE, "1234567890", Content.of("Hello from Bale"));
-
-// Template-driven Bale message (by name — resolved against the tenant's Bale templates)
+// By template name, channel-agnostic
 api.sendTemplateByName(ChannelType.BALE, "1234567890", "order_confirmed",
         Collections.singletonMap("orderId", "12345"));
 
-// Poll the delivery status of a Bale message
-StatusResult st = api.status(r.getId());
-if (st.isDelivered()) { /* delivered on Bale */ }
-else if (st.isFailed()) { /* handle failure */ }
+// Generic form
+api.send(ChannelType.BALE, "1234567890", Content.of("Hello from Bale"));
 ```
 
 ### Extending to new channels
-
-Because a channel is just a value, new channels work without an SDK change:
 
 ```java
 ChannelType whatsapp = ChannelType.of("whatsapp");
 api.send(whatsapp, "+989120000000", Content.of("Hi"));
 ```
 
-## Kavenegar compatibility
-
-For teams migrating from `kavenegar-java`, use the
-`com.softino.notifier.kavenegar.KavenegarApi` facade. It mirrors the kavenegar-java surfaces
-and returns the same model/enum/exception types (in the `kavenegar.*` namespace), so most callers
-only change the import.
-
-The facade is **type-compatible** with the calls used by the **trade-hub** project
-(`KavenegarSMS` / `ISMS`): `verifyLookup`, `send`, `status(long)`, `statusLocalMessageId`,
-`sendArray`, `countOutbox`, `countInbox`, `accountInfo`, `callMakeTTS`, and so on.
-
-```java
-import com.softino.notifier.kavenegar.KavenegarApi;
-import com.softino.notifier.kavenegar.models.*;
-import com.softino.notifier.kavenegar.enums.*;
-
-KavenegarApi api = new KavenegarApi("YOUR-KEY");
-
-SendResult r = api.verifyLookup("+989120000000", "123456", "verify");
-Date  = r.getMessage();        // the rendered message
-long  id   = r.getMessageId(); // provider message id
-int   st   = r.getStatus();
-
-StatusResult s = api.status(id);
-MessageStatus status = s.getStatus();       // enum
-String text = s.getStatusText();            // human statusText (mapped from Notifier status)
-```
-
-> Methods that map to Notifier features Notifier does not implement fail loudly with a
-> `BaseException` (subclass) rather than silently no-op, so migrated code catches the familiar
-> kavenegar exception types.
-
 ## Error handling
 
-All failures surface as checked/unchecked exceptions from the `com.softino.notifier.exception`
-(or the `kavenegar.excepctions` facade) hierarchies:
+Failures surface as exceptions from `com.softino.notifier.exception` (or `kavenegar.excepctions`
+through the facade):
 
 | Exception | Meaning |
 |---|---|
 | `NotifierException` | Base type for SDK errors. |
-| `ApiException` | A business/API error (e.g. duplicate idempotency key, invalid request). Carries a `code`. |
+| `ApiException` | Business/API error (e.g. duplicate idempotency key). Carries a `code`. |
 | `HttpException` | Transport/HTTP failure (status, connect, timeout). Carries the HTTP `code`. |
 
 ```java
 try {
-    api.send(ChannelType.SMS, recipient, Content.of("hi"));
-} catch (ApiException e) {
-    // business error — check e.getCode()
-} catch (HttpException e) {
-    // network/HTTP error — check e.getCode(), e.getStatusCode()
+    api.sendTemplateByName(ChannelType.SMS, recipient, "betaauth", vars);
+} catch (ApiException e) {        // business error — check e.getCode()
+} catch (HttpException e) {       // network/HTTP error — check e.getCode()
 }
 ```
 
 ## Status model
 
-Notifier uses a coarse lifecycle. `SendResult`/`StatusResult` expose:
-
-- `isQueued()`, `isDelivered()`, `isFailed()`
-- `getProvider()`, `getProviderMessageId()`, `getSentAt()`, `getError()`
-
-The Kavenegar facade maps these onto `kavenegar.enums.MessageStatus` + `StatusResult.getStatusText()`
-so migrated code keeps working.
+Notifier uses a coarse lifecycle. `SendResult`/`StatusResult` expose `isQueued()`, `isDelivered()`,
+`isFailed()`, `getProvider()`, `getProviderMessageId()`, `getSentAt()`, `getError()`. The Kavenegar
+facade maps these onto `kavenegar.enums.MessageStatus` + `StatusResult.getStatusText()` so migrated
+code keeps working.
 
 ## Configuration
-
-Construct the client:
 
 ```java
 // Default base URL (https://notifier-api.vibe.ir)
 NotifierApi api = new NotifierApi("YOUR-API-KEY");
 
-// Custom base URL (self-hosted / staging)
+// Custom base URL
 NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.internal");
 
-// Timeouts (connect, socket, in ms) + max pooled connections per route
-NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.vibe.ir",
-        5_000, 15_000, 50);
+// Timeouts (connect, socket, ms) + max pooled connections per route
+NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.vibe.ir", 5_000, 15_000, 50);
 ```
 
 ## Building from source
 
 ```bash
-mvn clean package      # compiles (strict Java 8) and runs the test suite
+mvn clean package      # compiles and runs the test suite
 mvn test               # unit + embedded-server contract tests
 ```
 
-The test suite includes an end-to-end contract test that spins up an embedded HTTP server
-emulating the Notifier API, so no network is required. A live integration test
-(`LiveApiIT`) is named `*IT` and is excluded from `mvn test`; run it only with credentials:
+A live integration test (`LiveApiIT`) is named `*IT` and excluded from `mvn test`; run it only with
+credentials:
 
 ```bash
-NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" \
-  mvn -Dtest=LiveApiIT test
+NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
 ## Publishing
 
-- **JitPack** — push a tag (e.g. `1.0.0`). JitPack builds and serves
+- **JitPack** — push a tag (e.g. `1.0.0`); JitPack builds and serves
   `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`. This is the path used by trade-hub.
-- **Maven Central (OSSRH)** — run `mvn -P release deploy`, which attaches sources + javadoc and
-  GPG-signs. Requires OSSRH credentials + a signing key.
+- **Maven Central (OSSRH)** — `mvn -P release deploy` (attaches sources + javadoc, GPG-signs).
 
 ## Project layout
 
 ```
 src/main/java/com/softino/notifier/
-  NotifierApi.java              # core, channel-agnostic client
+  NotifierApi.java              # core, channel-agnostic client (sendTemplateByName, …)
   ChannelType.java              # open enum-like channel type
   Content.java                  # body (+ subject)
-  SendOptions.java              # options: template, idempotency, schedule, callback, locale…
+  SendOptions.java              # template/locale/callback/idempotency/metadata…
   RecipientMessage.java         # bulk entry
   SendResult.java / StatusResult.java / BulkResult.java
   HistoryQuery.java / HistoryPage.java
-  channel/                      # Email / Telegram / Slack / Bale convenience accessors
+  channel/                      # Email / Telegram / Slack / Bale accessors
   exception/                    # NotifierException / ApiException / HttpException
-  kavenegar/                    # Kavenegar-compatible facade + models/enums/exceptions
+  kavenegar/                    # Kavenegar facade (models/enums/exceptions)
 src/test/java/...               # SDK, contract, and trade-hub-compatibility tests
 ```
 
