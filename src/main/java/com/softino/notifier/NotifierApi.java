@@ -236,6 +236,7 @@ public class NotifierApi implements AutoCloseable {
     private static void mergeOptions(SendOptions.Builder b, SendOptions o) {
         if (o.getChannelId() != null) b.channelId(o.getChannelId());
         if (o.getGroupId() != null) b.groupId(o.getGroupId());
+        if (o.getGroupName() != null) b.groupName(o.getGroupName());
         if (o.getIdempotencyKey() != null) b.idempotencyKey(o.getIdempotencyKey());
         if (o.getSendAt() != null) b.sendAt(o.getSendAt());
         if (o.getCallbackUrl() != null) b.callbackUrl(o.getCallbackUrl());
@@ -384,6 +385,7 @@ public class NotifierApi implements AutoCloseable {
         }
         if (o.getChannelId() != null) body.addProperty("channel_id", o.getChannelId());
         if (o.getGroupId() != null) body.addProperty("group_id", o.getGroupId());
+        if (o.getGroupName() != null) body.addProperty("group_name", o.getGroupName());
         if (o.getTemplateId() != null) body.addProperty("template_id", o.getTemplateId());
         if (o.getTemplateName() != null) body.addProperty("template_name", o.getTemplateName());
         if (o.getTemplateVars() != null && !o.getTemplateVars().isEmpty()) {

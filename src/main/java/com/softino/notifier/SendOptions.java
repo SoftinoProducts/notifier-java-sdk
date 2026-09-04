@@ -17,6 +17,7 @@ public final class SendOptions {
 
     private final String channelId;       // optional channel override (UUID)
     private final String groupId;         // optional load-balanced channel group (UUID)
+    private final String groupName;       // optional channel group name (resolved server-side)
     private final String templateId;      // optional template (UUID); content is rendered server-side
     private final String templateName;    // optional template name; resolved server-side
     private final Map<String, Object> templateVars;
@@ -30,6 +31,7 @@ public final class SendOptions {
     private SendOptions(Builder b) {
         this.channelId = b.channelId;
         this.groupId = b.groupId;
+        this.groupName = b.groupName;
         this.templateId = b.templateId;
         this.templateName = b.templateName;
         this.templateVars = b.templateVars == null ? null
@@ -54,6 +56,7 @@ public final class SendOptions {
 
     public String getChannelId() { return channelId; }
     public String getGroupId() { return groupId; }
+    public String getGroupName() { return groupName; }
     public String getTemplateId() { return templateId; }
     public String getTemplateName() { return templateName; }
     public Map<String, Object> getTemplateVars() { return templateVars; }
@@ -67,6 +70,7 @@ public final class SendOptions {
     public static final class Builder {
         private String channelId;
         private String groupId;
+        private String groupName;
         private String templateId;
         private String templateName;
         private Map<String, Object> templateVars;
@@ -79,6 +83,8 @@ public final class SendOptions {
 
         public Builder channelId(String channelId) { this.channelId = channelId; return this; }
         public Builder groupId(String groupId) { this.groupId = groupId; return this; }
+        /** Reference a channel group by name; the backend resolves it to a group id for routing. */
+        public Builder groupName(String groupName) { this.groupName = groupName; return this; }
         public Builder templateId(String templateId) { this.templateId = templateId; return this; }
         public Builder templateName(String templateName) { this.templateName = templateName; return this; }
         public Builder templateVar(String name, Object value) {

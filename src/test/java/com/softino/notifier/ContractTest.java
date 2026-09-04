@@ -234,4 +234,13 @@ public class ContractTest {
         assertTrue("positional params should be sent as template_params array",
                 body.contains("\"template_params\":[\"123456\",\"extra\"]"));
     }
+
+    @Test
+    public void verifyLookup_groupTemplate_emitsGroupName() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "123456", "sms-sale:verify");
+        String body = lastRequestBody.get();
+        assertTrue("should reference the group by name", body.contains("\"group_name\":\"sms-sale\""));
+        assertTrue("should keep the template name", body.contains("\"template_name\":\"verify\""));
+    }
 }

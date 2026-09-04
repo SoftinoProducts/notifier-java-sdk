@@ -2,6 +2,7 @@ package com.softino.notifier.kavenegar;
 
 import com.softino.notifier.ChannelType;
 import com.softino.notifier.NotifierApi;
+import com.softino.notifier.SendOptions;
 import com.softino.notifier.kavenegar.enums.MessageStatus;
 import com.softino.notifier.kavenegar.enums.MessageType;
 import com.softino.notifier.kavenegar.excepctions.ApiException;
@@ -201,11 +202,21 @@ public class KavenegarApi {
     public SendResult verifyLookup(String receptor, String token, String token2, String token3, String template) {
         // Positional: values are sent as an ordered template_params array and bound to the
         // template's declared param_names (mirrors Kavenegar's %token%, %token2%, %token3%).
-        return execute(() -> toSend(core.sendTemplateByName(ChannelType.SMS, receptor, template, nonEmptyTokens(token, token2, token3))));
+        // The template may be "group:template" to also route via a channel group by name.
+        final String[] gt = splitGroup(template);
+        return execute(() -> {
+            Object[] params = nonEmptyTokens(token, token2, token3);
+            if (gt[0] != null) {
+                return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1],
+                        SendOptions.builder().groupName(gt[0]).build(), params));
+            }
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], params));
+        });
     }
 
     public SendResult verifyLookup(String receptor, String token, String token2, String token3,
                                    String template, List<PairValue> params) {
+        final String[] gt = splitGroup(template);
         return execute(() -> {
             Map<String, Object> vars = new java.util.LinkedHashMap<>(tokens(token, token2, token3));
             if (params != null) {
@@ -215,12 +226,27 @@ public class KavenegarApi {
                     }
                 }
             }
-            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, template, vars));
+            if (gt[0] != null) {
+                return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars,
+                        SendOptions.builder().groupName(gt[0]).build()));
+            }
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars));
         });
     }
 
     public SendResult verifyLookup(String receptor, String token, String template) {
         return verifyLookup(receptor, token, "", "", template);
+    }
+
+    // "group:template" → {group, template}; no (or malformed) ':' → {null, template}.
+    private static String[] splitGroup(String template) {
+        if (template != null) {
+            int idx = template.indexOf(':');
+            if (idx > 0 && idx < template.length() - 1) {
+                return new String[]{template.substring(0, idx), template.substring(idx + 1)};
+            }
+        }
+        return new String[]{null, template};
     }
 
     private static Map<String, Object> tokens(String token, String token2, String token3) {
