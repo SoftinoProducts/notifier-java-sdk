@@ -96,7 +96,7 @@ Built from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
@@ -104,7 +104,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.0' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.1' }
 ```
 
 ---
@@ -394,8 +394,8 @@ NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dte
 
 ## Publishing
 
-- **JitPack** — push a tag (e.g. `1.0.0`); JitPack builds and serves
-  `com.github.SoftinoProducts:notifier-java-sdk:1.0.0`.
+- **JitPack** — push a tag (e.g. `1.0.1`); JitPack builds and serves
+  `com.github.SoftinoProducts:notifier-java-sdk:1.0.1`.
 
 ## Project layout
 
