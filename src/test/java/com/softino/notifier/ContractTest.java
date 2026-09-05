@@ -236,6 +236,28 @@ public class ContractTest {
     }
 
     @Test
+    public void sendTemplateByName_groupTemplate_emitsGroupName() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        api.sendTemplateByName(ChannelType.SMS, "+989120000000", "sms-sale:verify",
+                Collections.singletonMap("token", "777"));
+        String body = lastRequestBody.get();
+        assertTrue("standard by-name send should support 'group:template' shorthand",
+                body.contains("\"group_name\":\"sms-sale\""));
+        assertTrue("template name should be the part after ':'", body.contains("\"template_name\":\"verify\""));
+    }
+
+    @Test
+    public void sendTemplateByNamePositional_groupTemplate_emitsGroupNameAndParams() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        api.sendTemplateByName(ChannelType.SMS, "+989120000000", "sms-otp:betaauth", "123456");
+        String body = lastRequestBody.get();
+        assertTrue("positional by-name send should support 'group:template' shorthand",
+                body.contains("\"group_name\":\"sms-otp\""));
+        assertTrue(body.contains("\"template_name\":\"betaauth\""));
+        assertTrue(body.contains("\"template_params\":[\"123456\"]"));
+    }
+
+    @Test
     public void verifyLookup_groupTemplate_emitsGroupName() {
         KavenegarApi api = new KavenegarApi("test-key", baseUrl);
         api.verifyLookup("+989120000000", "123456", "sms-sale:verify");

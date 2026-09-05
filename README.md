@@ -96,7 +96,7 @@ Built from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
@@ -104,7 +104,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.1' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.2' }
 ```
 
 ---
@@ -212,8 +212,9 @@ api.send("100085902", "+989120000000", "hello");   // plain (non-template)
 
 > **Route by group name too.** Use `"groupName:templateName"` to send through a channel group
 > referenced by name: `api.verifyLookup(phone, "123456", "sms-group:verify")`. The part before the
-> `:` is the group name; the rest is the template name. Equivalently, on the core client:
-> `api.sendTemplateByName(ChannelType.SMS, phone, "verify", SendOptions.builder().groupName("sms-group").build(), "123456")`.
+> `:` is the group name; the rest is the template name. The **core client supports the same
+> shorthand** — `api.sendTemplateByName(ChannelType.SMS, phone, "sms-group:verify", "123456")`
+> does exactly that (and so does every send-with-template-by-name overload and bulk).
 
 ### Method mapping
 
@@ -394,8 +395,8 @@ NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dte
 
 ## Publishing
 
-- **JitPack** — push a tag (e.g. `1.0.1`); JitPack builds and serves
-  `com.github.SoftinoProducts:notifier-java-sdk:1.0.1`.
+- **JitPack** — push a tag (e.g. `1.0.2`); JitPack builds and serves
+  `com.github.SoftinoProducts:notifier-java-sdk:1.0.2`.
 
 ## Project layout
 

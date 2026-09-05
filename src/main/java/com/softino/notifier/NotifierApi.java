@@ -174,6 +174,9 @@ public class NotifierApi implements AutoCloseable {
      * Sends using a template referenced by name (resolved server-side against the tenant's
      * templates for the channel + locale). Useful when the caller only has a template name
      * (e.g. a Kavenegar template). Callers with a template UUID should use {@link #sendTemplate}.
+     *
+     * <p>The name may be given as {@code "group-name:template-name"} to also route via a channel
+     * group by name — the SDK splits it into {@code group_name} + {@code template_name}.</p>
      */
     public SendResult sendTemplateByName(ChannelType type, String recipient, String templateName,
                                          Map<String, Object> templateVars) {
@@ -181,7 +184,10 @@ public class NotifierApi implements AutoCloseable {
                 SendOptions.builder().templateName(templateName).templateVars(templateVars).build());
     }
 
-    /** Sends using a template by name with extra options. */
+    /**
+     * Sends using a template by name with extra options. The name may be
+     * {@code "group-name:template-name"} to route via a channel group by name.
+     */
     public SendResult sendTemplateByName(ChannelType type, String recipient, String templateName,
                                          Map<String, Object> templateVars, SendOptions opts) {
         SendOptions.Builder b = SendOptions.builder()
@@ -263,7 +269,12 @@ public class NotifierApi implements AutoCloseable {
                 }
             }
             if (m.getTemplateId() != null) jo.addProperty("template_id", m.getTemplateId());
-            if (m.getTemplateName() != null) jo.addProperty("template_name", m.getTemplateName());
+            if (m.getTemplateName() != null) {
+                // Support "group-name:template-name" shorthand for group routing by name.
+                String[] gt = splitGroup(m.getTemplateName());
+                if (gt[0] != null) jo.addProperty("group_name", gt[0]);
+                jo.addProperty("template_name", gt[1]);
+            }
             if (m.getTemplateVars() != null && !m.getTemplateVars().isEmpty()) {
                 jo.add("template_vars", GSON.toJsonTree(m.getTemplateVars()));
             }
@@ -385,9 +396,22 @@ public class NotifierApi implements AutoCloseable {
         }
         if (o.getChannelId() != null) body.addProperty("channel_id", o.getChannelId());
         if (o.getGroupId() != null) body.addProperty("group_id", o.getGroupId());
-        if (o.getGroupName() != null) body.addProperty("group_name", o.getGroupName());
+
+        // A template may be given as "group-name:template-name" to route via a channel group
+        // by name. Split it here so every send-using-a-template path supports the shorthand.
+        // An explicit groupName on the options wins over the prefix in the template name.
+        String groupName = o.getGroupName();
+        String templateName = o.getTemplateName();
+        if (templateName != null) {
+            String[] gt = splitGroup(templateName);
+            if (gt[0] != null) {
+                if (groupName == null) groupName = gt[0];
+                templateName = gt[1];
+            }
+        }
+        if (groupName != null) body.addProperty("group_name", groupName);
         if (o.getTemplateId() != null) body.addProperty("template_id", o.getTemplateId());
-        if (o.getTemplateName() != null) body.addProperty("template_name", o.getTemplateName());
+        if (templateName != null) body.addProperty("template_name", templateName);
         if (o.getTemplateVars() != null && !o.getTemplateVars().isEmpty()) {
             body.add("template_vars", GSON.toJsonTree(o.getTemplateVars()));
         }
@@ -416,6 +440,18 @@ public class NotifierApi implements AutoCloseable {
 
     private static boolean isBlank(String s) {
         return s == null || s.trim().isEmpty();
+    }
+
+    /** Splits a "group-name:template-name" string into {group, template}. No (or malformed)
+     *  ':' yields {null, template} — so plain template names pass through untouched. */
+    private static String[] splitGroup(String template) {
+        if (template != null) {
+            int idx = template.indexOf(':');
+            if (idx > 0 && idx < template.length() - 1) {
+                return new String[]{template.substring(0, idx), template.substring(idx + 1)};
+            }
+        }
+        return new String[]{null, template};
     }
 
     private JsonObject postJson(String path, JsonObject body) {
