@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.2' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.3' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -159,6 +159,30 @@ String text = s.getStatusText();    // mapped statusText
 api.send("100085902", "+989120000000", "hello");  // plain (non-template)
 ```
 
+> **Polling a message you just sent — use the UUID, not the provider message id.**
+> Notifier is **async**: `send`/`verifyLookup` return before the provider has been reached, so
+> `r.getMessageId()` is `0` and `status(msgId)` throws `ApiException: not found` for a freshly
+> sent message. The notifier UUID is always present (`r.getNotificationId()`), and
+> `statusByNotificationId(uuid)` resolves reliably.
+>
+> **Before — breaks for a fresh send:**
+> ```java
+> SendResult r = api.verifyLookup("+989120000000", "123456", "vibe:salerequest");
+> long msgId = r.getMessageId();        // 0 — no provider message id yet (async Notifier)
+> StatusResult s = api.status(msgId);   // ApiException: not found
+> ```
+>
+> **After — reliable:**
+> ```java
+> SendResult r = api.verifyLookup("+989120000000", "123456", "vibe:salerequest");
+> String uuid      = r.getNotificationId();            // UUID, always returned at send time
+> StatusResult s   = api.statusByNotificationId(uuid); // -> GET /v1/notifications/{uuid}
+> MessageStatus ms = s.getStatus();                    // e.g. Delivered
+> ```
+>
+> `status(messageId)` (by provider message id) still works once the provider id has been
+> logged/recorded, but `statusByNotificationId(uuid)` is the safe choice for a just-sent message.
+
 > **Template params are positional.** `verifyLookup(receptor, token, token2, token3, template)` sends its
 > values as an ordered `template_params` array, so the template must declare `param_names` in the same
 > order (`["token"]`, `["token","token2","token3"]`, …). If the template uses different placeholder
@@ -263,7 +287,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.2` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.3` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---

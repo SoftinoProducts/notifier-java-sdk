@@ -45,7 +45,8 @@ public class TradeHubCompatTest {
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/notifications/by-provider-message-id", this::handleByProvider);
-        server.createContext("/v1/notifications", this::handleSend);
+        server.createContext("/v1/notifications/", this::handleStatusByUuid); // status by UUID (longest-match prefix)
+        server.createContext("/v1/notifications", this::handleSend);          // POST send (exact)
         server.start();
         api = new KavenegarApi("test-key", "http://127.0.0.1:" + server.getAddress().getPort());
     }
@@ -70,6 +71,22 @@ public class TradeHubCompatTest {
     private void handleByProvider(HttpExchange ex) throws IOException {
         JsonObject o = new JsonObject();
         o.addProperty("id", UUID.randomUUID().toString());
+        o.addProperty("status", "delivered");
+        o.addProperty("channel_type", "sms");
+        o.addProperty("recipient", "+989120000000");
+        o.addProperty("body", "hello");
+        o.addProperty("provider", "kavenegar");
+        o.addProperty("provider_message_id", "560152226");
+        o.addProperty("sent_at", "2026-01-01T00:00:00Z");
+        respond(ex, 200, o);
+    }
+
+    // GET /v1/notifications/<uuid> — status by Notifier UUID (statusByNotificationId).
+    private void handleStatusByUuid(HttpExchange ex) throws IOException {
+        String path = ex.getRequestURI().getPath(); // "/v1/notifications/<uuid>"
+        String uuid = path.substring(path.lastIndexOf('/') + 1);
+        JsonObject o = new JsonObject();
+        o.addProperty("id", uuid);
         o.addProperty("status", "delivered");
         o.addProperty("channel_type", "sms");
         o.addProperty("recipient", "+989120000000");
@@ -134,6 +151,22 @@ public class TradeHubCompatTest {
         // The enum values used by trade-hub are present:
         assertEquals(MessageStatus.Queued, MessageStatus.valueOf(1));
         assertEquals(MessageStatus.Incorrect, MessageStatus.valueOf(100));
+    }
+
+    @Test
+    public void statusByNotificationId_resolvesByUuid() {
+        // Reliable poll: send -> getNotificationId() (UUID, always present) -> status(uuid).
+        // Unlike status(messageId), this does not depend on the provider message id being
+        // logged yet, so it works for a message that was just sent (async Notifier).
+        SendResult sent = api.verifyLookup("+989120000000", "123456", "betaauth");
+        String uuid = sent.getNotificationId();
+        assertNotNull("notificationId must be present at send time", uuid);
+
+        StatusResult st = api.statusByNotificationId(uuid);
+
+        assertEquals(MessageStatus.Delivered, st.getStatus());
+        assertEquals("تحویل شد", st.getStatusText());
+        assertEquals(uuid, st.getNotificationId()); // round-trips the UUID
     }
 
     @Test

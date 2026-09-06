@@ -179,6 +179,27 @@ public class KavenegarApi {
         });
     }
 
+    /**
+     * Fetches the delivery status of a notification by its Notifier UUID, not by the provider
+     * message id.
+     *
+     * <p>Notifier is async: {@code send}/{@code verifyLookup} return before the provider has
+     * been reached, so {@link SendResult#getMessageId()} is {@code 0} at send time and
+     * {@link #status(long)} (by provider message id) returns {@code not found} for a freshly
+     * sent message. The notifier UUID is always returned synchronously (see
+     * {@link SendResult#getNotificationId()}), so this method always resolves and is the
+     * reliable way to poll a message you just sent.</p>
+     *
+     * <pre>{@code
+     * SendResult sent = api.verifyLookup(phone, otp, "vibe:salerequest");
+     * String uuid = sent.getNotificationId();      // reliable, always present
+     * StatusResult st = api.statusByNotificationId(uuid);
+     * }</pre>
+     */
+    public StatusResult statusByNotificationId(String notificationId) {
+        return execute(() -> toStatus(core.status(notificationId)));
+    }
+
     public StatusLocalMessageIdResult statusLocalMessageId(long localId) {
         return execute(() -> toStatusLocal(core.statusByProviderMessageId(String.valueOf(localId)), localId));
     }

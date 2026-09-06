@@ -6,7 +6,7 @@
 
     <groupId>com.softino</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <packaging>jar</packaging>
 
     <name>Notifier Java SDK</name>
