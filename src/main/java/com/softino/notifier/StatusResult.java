@@ -22,10 +22,17 @@ public final class StatusResult {
     private final String providerMessageId;
     private final String sentAt;
     private final String error;
+    private final boolean simulated;
 
     public StatusResult(String id, String status, String channelType, String recipient,
                         String subject, String body, String provider, String providerMessageId,
                         String sentAt, String error) {
+        this(id, status, channelType, recipient, subject, body, provider, providerMessageId, sentAt, error, false);
+    }
+
+    public StatusResult(String id, String status, String channelType, String recipient,
+                        String subject, String body, String provider, String providerMessageId,
+                        String sentAt, String error, boolean simulated) {
         this.id = id;
         this.status = status;
         this.channelType = channelType;
@@ -36,6 +43,7 @@ public final class StatusResult {
         this.providerMessageId = providerMessageId;
         this.sentAt = sentAt;
         this.error = error;
+        this.simulated = simulated;
     }
 
     public String getId() { return id; }
@@ -48,6 +56,12 @@ public final class StatusResult {
     public String getProviderMessageId() { return providerMessageId; }
     public String getSentAt() { return sentAt; }
     public String getError() { return error; }
+
+    /**
+     * Whether this delivery was rehearsed rather than attempted: the provider was never
+     * contacted.
+     */
+    public boolean isSimulated() { return simulated; }
 
     public boolean isDelivered() { return "delivered".equalsIgnoreCase(status); }
     public boolean isFailed() { return "failed".equalsIgnoreCase(status); }
@@ -69,7 +83,8 @@ public final class StatusResult {
                 o.has("recipient") ? o.get("recipient").getAsString() : null,
                 subject,
                 o.has("body") ? o.get("body").getAsString() : null,
-                provider, pmi, sentAt, error);
+                provider, pmi, sentAt, error,
+                o.has("simulated") && !o.get("simulated").isJsonNull() && o.get("simulated").getAsBoolean());
     }
 
     @Override

@@ -21,6 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -99,6 +100,8 @@ public class ContractTest {
     }
 
     private void handleBulk(HttpExchange ex) throws IOException {
+        // Recorded like the single-send path so a test can assert what the SDK put on the wire.
+        lastRequestBody.set(readBody(ex.getRequestBody()));
         JsonObject o = new JsonObject();
         o.addProperty("batch_id", UUID.randomUUID().toString());
         o.addProperty("count", 2);
@@ -202,6 +205,55 @@ public class ContractTest {
         String body = lastRequestBody.get();
         assertTrue(body.contains("\"template_id\":\"otp-template\""));
         assertTrue(body.contains("\"token\":\"123456\""));
+    }
+
+    // A rehearsal is the same request plus one field: templates, groups and channels stay as they
+    // are, and the flag must actually reach the wire.
+    @Test
+    public void sendOptions_simulatedIsTransmitted() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        SendOptions opts = SendOptions.builder().simulated(true).build();
+        api.sendTemplate(ChannelType.SMS, "+989120000000", "verify",
+                Collections.singletonMap("token", "123456"), opts);
+        String body = lastRequestBody.get();
+        assertTrue("simulated flag should be sent", body.contains("\"simulated\":true"));
+        assertTrue("the template must be unchanged", body.contains("\"template_id\":\"verify\""));
+    }
+
+    @Test
+    public void sendOptions_simulatedIsOmittedWhenFalse() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth",
+                Collections.singletonMap("token", "777"),
+                SendOptions.builder().locale("fa").build());
+        assertFalse("an ordinary send must not carry the flag", lastRequestBody.get().contains("simulated"));
+    }
+
+    @Test
+    public void bulk_simulatedBatchFlagAndPerMessageOverride() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        RecipientMessage inherits = RecipientMessage.builder()
+                .recipient("+989120000001")
+                .content(Content.of("rehearsal"))
+                .build();
+        RecipientMessage overrides = RecipientMessage.builder()
+                .recipient("+989120000002")
+                .content(Content.of("real"))
+                .simulated(false)
+                .build();
+
+        api.bulk(ChannelType.SMS, Arrays.asList(inherits, overrides), true);
+
+        String body = lastRequestBody.get();
+        assertTrue("batch flag should be sent", body.contains("\"simulated\":true"));
+        assertTrue("per-message override should be sent", body.contains("\"simulated\":false"));
+    }
+
+    @Test
+    public void statusResult_reportsSimulated() throws IOException {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        SendResult r = api.send(ChannelType.SMS, "+989120000000", "hello");
+        assertFalse("a normal send reports simulated=false", r.isSimulated());
     }
 
     @Test

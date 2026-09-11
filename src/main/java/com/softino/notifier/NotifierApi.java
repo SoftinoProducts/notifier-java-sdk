@@ -248,6 +248,7 @@ public class NotifierApi implements AutoCloseable {
         if (o.getCallbackUrl() != null) b.callbackUrl(o.getCallbackUrl());
         if (o.getMetadata() != null) b.metadata(o.getMetadata());
         if (o.getLocale() != null) b.locale(o.getLocale());
+        if (o.isSimulated()) b.simulated(true);
     }
 
     // ------------------------------------------------------------------
@@ -256,8 +257,18 @@ public class NotifierApi implements AutoCloseable {
 
     /** Sends many recipients in one request (backend fan-out per message). */
     public BulkResult bulk(ChannelType type, List<RecipientMessage> messages) {
+        return bulk(type, messages, false);
+    }
+
+    /**
+     * Sends many recipients in one request. When {@code simulated} is true every message is
+     * rehearsed — the whole pipeline runs but the provider is never contacted — unless a message
+     * overrides it with {@link RecipientMessage.Builder#simulated(boolean)}.
+     */
+    public BulkResult bulk(ChannelType type, List<RecipientMessage> messages, boolean simulated) {
         JsonObject body = new JsonObject();
         body.addProperty("channel_type", type.getValue());
+        if (simulated) body.addProperty("simulated", true);
         JsonArray arr = new JsonArray();
         for (RecipientMessage m : messages) {
             JsonObject jo = new JsonObject();
@@ -281,6 +292,9 @@ public class NotifierApi implements AutoCloseable {
             if (m.getCallbackUrl() != null) jo.addProperty("callback_url", m.getCallbackUrl());
             if (m.getMetadata() != null && !m.getMetadata().isEmpty()) {
                 jo.add("metadata", GSON.toJsonTree(m.getMetadata()));
+            }
+            if (m.getSimulated() != null) {
+                jo.addProperty("simulated", m.getSimulated());
             }
             arr.add(jo);
         }
@@ -429,6 +443,7 @@ public class NotifierApi implements AutoCloseable {
             body.add("metadata", GSON.toJsonTree(o.getMetadata()));
         }
         if (o.getLocale() != null) body.addProperty("locale", o.getLocale());
+        if (o.isSimulated()) body.addProperty("simulated", true);
 
         // At least one of body / template_id / template_name must be present.
         boolean missingContent = !body.has("body") || isBlank(body.get("body").getAsString());

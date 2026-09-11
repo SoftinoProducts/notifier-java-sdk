@@ -25,15 +25,23 @@ public final class SendResult {
     private final String provider;
     private final String providerMessageId;
     private final String error;
+    private final boolean simulated;
 
     public SendResult(String id, String status, String channelType, String recipient,
                       String subject, String body, String sendAt, String createdAt, String updatedAt) {
-        this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt, null, null, null);
+        this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt, null, null, null, false);
     }
 
     public SendResult(String id, String status, String channelType, String recipient,
                       String subject, String body, String sendAt, String createdAt, String updatedAt,
                       String provider, String providerMessageId, String error) {
+        this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt,
+                provider, providerMessageId, error, false);
+    }
+
+    public SendResult(String id, String status, String channelType, String recipient,
+                      String subject, String body, String sendAt, String createdAt, String updatedAt,
+                      String provider, String providerMessageId, String error, boolean simulated) {
         this.id = id;
         this.status = status;
         this.channelType = channelType;
@@ -46,6 +54,7 @@ public final class SendResult {
         this.provider = provider;
         this.providerMessageId = providerMessageId;
         this.error = error;
+        this.simulated = simulated;
     }
 
     // ---- Core accessors ----
@@ -76,6 +85,14 @@ public final class SendResult {
     public boolean isDelivered() { return "delivered".equalsIgnoreCase(status); }
     public boolean isFailed() { return "failed".equalsIgnoreCase(status); }
 
+    /**
+     * Whether the service rehearsed this send instead of delivering it: the provider was never
+     * contacted, and {@code getProvider()} reads "simulator". This reflects what the service
+     * actually did, so it is the way to confirm a rehearsal rather than assume the request was
+     * honoured.
+     */
+    public boolean isSimulated() { return simulated; }
+
     public static SendResult from(JsonObject o) {
         String sendAt = o.has("send_at") && !o.get("send_at").isJsonNull() ? o.get("send_at").getAsString() : null;
         String subject = o.has("subject") && !o.get("subject").isJsonNull() ? o.get("subject").getAsString() : null;
@@ -93,7 +110,8 @@ public final class SendResult {
                 sendAt,
                 o.has("created_at") ? o.get("created_at").getAsString() : null,
                 o.has("updated_at") ? o.get("updated_at").getAsString() : null,
-                provider, pmi, error);
+                provider, pmi, error,
+                o.has("simulated") && !o.get("simulated").isJsonNull() && o.get("simulated").getAsBoolean());
     }
 
     @Override

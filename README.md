@@ -203,6 +203,43 @@ Methods that map to features Notifier doesn't implement still return the kaveneg
 
 ---
 
+## Rehearsing a send (simulated)
+
+`SendOptions.simulated(true)` runs the whole pipeline — routing, group selection, template
+rendering, provider-template mapping, the status event and the panel — without delivering
+anything and without touching your templates, groups or channels. The service swaps the provider
+call for a simulator, so the notification is reported as delivered by provider `simulator` with a
+provider message id like `sim-sms-kavenegar-1`: the would-be provider is still named.
+
+```java
+SendResult r = api.sendTemplateByName(ChannelType.SMS, phone, "sms-group:verify",
+        SendOptions.builder().simulated(true).build(),   // your real template and group, unchanged
+        "123456");
+
+System.out.println(r.isSimulated());   // true
+System.out.println(r.getProvider());   // simulator
+```
+
+In a bulk send the flag applies to the whole batch and a single message can opt out:
+
+```java
+api.bulk(ChannelType.SMS, Arrays.asList(
+        RecipientMessage.of(phoneA, Content.of("rehearsed")),
+        RecipientMessage.builder().recipient(phoneB).content(Content.of("really sent"))
+                .simulated(false).build()),
+        true);   // batch-level simulated
+```
+
+Two things worth knowing:
+
+- **The API must support the flag.** A service that predates it ignores the unknown field and
+  sends the message for real. `SendResult.isSimulated()` reports what the service actually did,
+  so check it before trusting a rehearsal in a new environment.
+- A rehearsal still creates a notification: it is counted in analytics and visible in the panel
+  with `provider = simulator`. It is not a dry run that leaves no trace.
+
+---
+
 ## Status lookup
 
 ```java

@@ -27,6 +27,7 @@ public final class SendOptions {
     private final String callbackUrl;
     private final Map<String, Object> metadata;
     private final String locale;
+    private final boolean simulated;
 
     private SendOptions(Builder b) {
         this.channelId = b.channelId;
@@ -44,6 +45,7 @@ public final class SendOptions {
         this.metadata = b.metadata == null ? null
                 : Collections.unmodifiableMap(new LinkedHashMap<String, Object>(b.metadata));
         this.locale = b.locale;
+        this.simulated = b.simulated;
     }
 
     public static Builder builder() {
@@ -67,6 +69,12 @@ public final class SendOptions {
     public Map<String, Object> getMetadata() { return metadata; }
     public String getLocale() { return locale; }
 
+    /**
+     * Whether this send is rehearsed instead of delivered: the service runs its whole pipeline
+     * but never contacts the provider, reporting the notification as delivered by "simulator".
+     */
+    public boolean isSimulated() { return simulated; }
+
     public static final class Builder {
         private String channelId;
         private String groupId;
@@ -80,6 +88,7 @@ public final class SendOptions {
         private String callbackUrl;
         private Map<String, Object> metadata;
         private String locale;
+        private boolean simulated;
 
         public Builder channelId(String channelId) { this.channelId = channelId; return this; }
         public Builder groupId(String groupId) { this.groupId = groupId; return this; }
@@ -115,6 +124,17 @@ public final class SendOptions {
             return this;
         }
         public Builder locale(String locale) { this.locale = locale; return this; }
+
+        /**
+         * Rehearse the send: routing, group selection, template rendering and the panel all
+         * behave normally, but the provider is never contacted and nothing is delivered. Your
+         * templates, groups and channels stay exactly as they are.
+         *
+         * <p>The API must support the flag; a service that predates it ignores the unknown field
+         * and sends the message for real. {@link SendResult#isSimulated()} echoes what the
+         * service actually did.</p>
+         */
+        public Builder simulated(boolean simulated) { this.simulated = simulated; return this; }
 
         public SendOptions build() {
             return new SendOptions(this);

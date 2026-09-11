@@ -18,6 +18,7 @@ public final class RecipientMessage {
     private final Map<String, Object> templateVars;
     private final String callbackUrl;
     private final Map<String, Object> metadata;
+    private final Boolean simulated;
 
     private RecipientMessage(Builder b) {
         this.recipient = Objects.requireNonNull(b.recipient, "recipient");
@@ -29,6 +30,7 @@ public final class RecipientMessage {
         this.callbackUrl = b.callbackUrl;
         this.metadata = b.metadata == null ? null
                 : Collections.unmodifiableMap(new LinkedHashMap<String, Object>(b.metadata));
+        this.simulated = b.simulated;
     }
 
     public static Builder builder() {
@@ -47,6 +49,11 @@ public final class RecipientMessage {
     public String getCallbackUrl() { return callbackUrl; }
     public Map<String, Object> getMetadata() { return metadata; }
 
+    /**
+     * Per-message override of the batch-level simulated flag. {@code null} inherits it.
+     */
+    public Boolean getSimulated() { return simulated; }
+
     public static final class Builder {
         private String recipient;
         private Content content;
@@ -55,8 +62,12 @@ public final class RecipientMessage {
         private Map<String, Object> templateVars;
         private String callbackUrl;
         private Map<String, Object> metadata;
+        private Boolean simulated;
 
         public Builder recipient(String recipient) { this.recipient = recipient; return this; }
+
+        /** Override the batch-level simulated flag for this message: {@code false} really sends it. */
+        public Builder simulated(boolean simulated) { this.simulated = simulated; return this; }
         public Builder content(Content content) { this.content = content; return this; }
         /** Sets body directly (convenience). */
         public Builder body(String body) { this.content = new Content(null, body); return this; }
