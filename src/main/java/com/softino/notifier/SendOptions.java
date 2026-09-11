@@ -130,9 +130,8 @@ public final class SendOptions {
          * behave normally, but the provider is never contacted and nothing is delivered. Your
          * templates, groups and channels stay exactly as they are.
          *
-         * <p>The API must support the flag; a service that predates it ignores the unknown field
-         * and sends the message for real. {@link SendResult#isSimulated()} echoes what the
-         * service actually did.</p>
+         * <p>{@link SendResult#isSimulated()} reports whether the delivery was rehearsed, as the
+         * service recorded it.</p>
          */
         public Builder simulated(boolean simulated) { this.simulated = simulated; return this; }
 

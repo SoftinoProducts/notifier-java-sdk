@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.3' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.4' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -230,13 +230,9 @@ api.bulk(ChannelType.SMS, Arrays.asList(
         true);   // batch-level simulated
 ```
 
-Two things worth knowing:
-
-- **The API must support the flag.** A service that predates it ignores the unknown field and
-  sends the message for real. `SendResult.isSimulated()` reports what the service actually did,
-  so check it before trusting a rehearsal in a new environment.
-- A rehearsal still creates a notification: it is counted in analytics and visible in the panel
-  with `provider = simulator`. It is not a dry run that leaves no trace.
+Worth knowing: a rehearsal still creates a notification — it is counted in analytics and visible
+in the panel with `provider = simulator`. It is not a dry run that leaves no trace.
+`SendResult.isSimulated()` reports whether the delivery was rehearsed, as the service recorded it.
 
 ---
 
@@ -324,7 +320,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.3` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.4` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
