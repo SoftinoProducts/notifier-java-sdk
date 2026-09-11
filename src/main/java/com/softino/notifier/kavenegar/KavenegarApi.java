@@ -221,22 +221,40 @@ public class KavenegarApi {
     // ------------------------------------------------------------------
 
     public SendResult verifyLookup(String receptor, String token, String token2, String token3, String template) {
+        // The cast keeps the call unambiguous: without it, `null` also matches the
+        // List<PairValue> overload below.
+        return verifyLookup(receptor, token, token2, token3, template, (Boolean) null);
+    }
+
+    /**
+     * Sends a template lookup, optionally rehearsing it.
+     *
+     * <p>{@code simulated} may be null, which means "send for real" and is the behaviour of the
+     * overload without the parameter. When true the whole pipeline runs — routing, group
+     * selection, template rendering and the panel — but the provider is never contacted, so an
+     * existing Kavenegar call site can be put into rehearsal by adding one argument.</p>
+     */
+    public SendResult verifyLookup(String receptor, String token, String token2, String token3, String template,
+                                   Boolean simulated) {
         // Positional: values are sent as an ordered template_params array and bound to the
         // template's declared param_names (mirrors Kavenegar's %token%, %token2%, %token3%).
         // The template may be "group:template" to also route via a channel group by name.
         final String[] gt = splitGroup(template);
         return execute(() -> {
             Object[] params = nonEmptyTokens(token, token2, token3);
-            if (gt[0] != null) {
-                return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1],
-                        SendOptions.builder().groupName(gt[0]).build(), params));
-            }
-            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], params));
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1],
+                    options(gt[0], simulated), params));
         });
     }
 
     public SendResult verifyLookup(String receptor, String token, String token2, String token3,
                                    String template, List<PairValue> params) {
+        return verifyLookup(receptor, token, token2, token3, template, params, null);
+    }
+
+    /** Sends a template lookup with named parameters, optionally rehearsing it. */
+    public SendResult verifyLookup(String receptor, String token, String token2, String token3,
+                                   String template, List<PairValue> params, Boolean simulated) {
         final String[] gt = splitGroup(template);
         return execute(() -> {
             Map<String, Object> vars = new java.util.LinkedHashMap<>(tokens(token, token2, token3));
@@ -247,16 +265,36 @@ public class KavenegarApi {
                     }
                 }
             }
-            if (gt[0] != null) {
-                return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars,
-                        SendOptions.builder().groupName(gt[0]).build()));
-            }
-            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars));
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars,
+                    options(gt[0], simulated)));
         });
     }
 
     public SendResult verifyLookup(String receptor, String token, String template) {
         return verifyLookup(receptor, token, "", "", template);
+    }
+
+    /**
+     * The two-value form of {@link #verifyLookup(String, String, String, String, String, Boolean)},
+     * optionally rehearsed.
+     */
+    public SendResult verifyLookup(String receptor, String token, String template, Boolean simulated) {
+        return verifyLookup(receptor, token, "", "", template, simulated);
+    }
+
+    /**
+     * Builds the send options for a lookup: the group shorthand (when present) and whether the
+     * send is a rehearsal. Kept in one place so both overloads cannot drift apart.
+     */
+    private static SendOptions options(String groupName, Boolean simulated) {
+        SendOptions.Builder b = SendOptions.builder();
+        if (groupName != null) {
+            b.groupName(groupName);
+        }
+        if (simulated != null && simulated) {
+            b.simulated(true);
+        }
+        return b.build();
     }
 
     // "group:template" → {group, template}; no (or malformed) ':' → {null, template}.

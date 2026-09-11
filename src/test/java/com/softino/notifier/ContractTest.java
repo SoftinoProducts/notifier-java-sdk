@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.softino.notifier.exception.ApiException;
 import com.softino.notifier.kavenegar.KavenegarApi;
+import com.softino.notifier.kavenegar.utils.PairValue;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -264,6 +265,59 @@ public class ContractTest {
         String body = lastRequestBody.get();
         assertTrue("should reference template by name", body.contains("\"template_name\":\"betaauth\""));
         assertTrue(body.contains("\"token\":\"777\""));
+    }
+
+    // Existing Kavenegar call sites can be put into rehearsal by adding one argument: no
+    // migration to the NotifierApi interface is needed.
+    @Test
+    public void verifyLookup_simulatedOverloadIsTransmitted() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "123456", "sms-group:verify", true);
+
+        String body = lastRequestBody.get();
+        assertTrue("simulated flag should be sent", body.contains("\"simulated\":true"));
+        assertTrue("the template must be unchanged", body.contains("\"template_name\":\"verify\""));
+        assertTrue("the group shorthand must still apply", body.contains("\"group_name\":\"sms-group\""));
+    }
+
+    @Test
+    public void verifyLookup_simulatedWithToken2AndToken3() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "1", "2", "3", "order_notice", true);
+
+        String body = lastRequestBody.get();
+        assertTrue(body.contains("\"simulated\":true"));
+        assertTrue("positional values must still be sent", body.contains("\"template_params\":[\"1\",\"2\",\"3\"]"));
+    }
+
+    @Test
+    public void verifyLookup_simulatedWithNamedParams() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "", "", "", "verify",
+                Collections.singletonList(new PairValue("token", "998877")), true);
+
+        String body = lastRequestBody.get();
+        assertTrue(body.contains("\"simulated\":true"));
+        assertTrue(body.contains("\"token\":\"998877\""));
+    }
+
+    @Test
+    public void verifyLookup_simulatedFalseIsOmitted() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "123456", "verify", false);
+        assertFalse("an explicit false must not send the flag", lastRequestBody.get().contains("simulated"));
+    }
+
+    // The overloads without the flag keep their exact previous behaviour.
+    @Test
+    public void verifyLookup_withoutFlagIsUnchanged() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "123456", "verify");
+
+        String body = lastRequestBody.get();
+        assertFalse("no flag by default", body.contains("simulated"));
+        assertTrue(body.contains("\"template_name\":\"verify\""));
+        assertTrue(body.contains("\"template_params\":[\"123456\"]"));
     }
 
     @Test

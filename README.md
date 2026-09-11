@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.5</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.4' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.5' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -201,6 +201,11 @@ api.send("100085902", "+989120000000", "hello");  // plain (non-template)
 Methods that map to features Notifier doesn't implement still return the kavenegar type but throw a
 `kavenegar.excepctions.BaseException`, so existing `catch (BaseException)` keeps working.
 
+The `verifyLookup` overloads take an optional trailing `Boolean simulated`. Passing `true` rehearses
+the send (the provider is never contacted, the notification is reported delivered by `simulator`)
+while the template, group and channel stay exactly as they are — see
+[Rehearsing a send](#rehearsing-a-send-simulated).
+
 ---
 
 ## Rehearsing a send (simulated)
@@ -218,6 +223,19 @@ SendResult r = api.sendTemplateByName(ChannelType.SMS, phone, "sms-group:verify"
 
 System.out.println(r.isSimulated());   // true
 System.out.println(r.getProvider());   // simulator
+```
+
+The Kavenegar facade takes the same flag per call, so an existing call site can be put into
+rehearsal by adding one argument — no migration to `NotifierApi`:
+
+```java
+KavenegarApi api = new KavenegarApi("YOUR-KEY");
+
+api.verifyLookup("+989120000000", "123456", "sms-group:verify", true);      // rehearsed
+api.verifyLookup("+989120000000", "1", "2", "3", "order_notice", true);     // with token2/token3
+api.verifyLookup("+989120000000", "", "", "", "verify", params, true);      // with named params
+
+api.verifyLookup("+989120000000", "123456", "sms-group:verify");            // unchanged: really sent
 ```
 
 In a bulk send the flag applies to the whole batch and a single message can opt out:
@@ -320,7 +338,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.4` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.5` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
