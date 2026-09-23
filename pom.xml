@@ -27,9 +27,16 @@
              your IDE. -->
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <gson.version>2.8.0</gson.version>
+        <!-- 2.8.0 is affected by CVE-2022-25647 (deserialization of untrusted data, 7.5 High);
+             2.11.0 is the first release in the 2.x line past it. Not reachable through this
+             SDK's own usage today (it only calls fromJson(..., JsonObject.class), with no
+             default typing), but a consumer inherits the version from the BOM, so the bump
+             removes the exposure rather than relying on that reasoning. -->
+        <gson.version>2.11.0</gson.version>
         <httpclient.version>4.5.14</httpclient.version>
-        <junit.version>4.12</junit.version>
+        <!-- 4.12 is affected by CVE-2020-15250 (test-scope information disclosure via a
+             world-readable temporary directory). -->
+        <junit.version>4.13.2</junit.version>
     </properties>
 
     <dependencies>

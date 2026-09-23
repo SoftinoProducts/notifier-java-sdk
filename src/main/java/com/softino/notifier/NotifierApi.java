@@ -25,6 +25,12 @@ import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.util.EntityUtils;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -63,6 +69,11 @@ public class NotifierApi implements AutoCloseable {
     private final String baseUrl;
     private final CloseableHttpClient httpClient;
 
+    /** Returns the canonical base URL this client targets. */
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
     /**
      * Constructs a client pointing at {@link #DEFAULT_BASE_URL}.
      *
@@ -93,9 +104,24 @@ public class NotifierApi implements AutoCloseable {
      */
     public NotifierApi(String apiKey, String baseUrl, int connectTimeoutMs, int socketTimeoutMs,
                        int maxConnectionsPerRoute) {
+        this(apiKey, baseUrl, connectTimeoutMs, socketTimeoutMs, maxConnectionsPerRoute, false);
+    }
+
+    /**
+     * Constructs a client, optionally permitting a plaintext base URL on a remote host.
+     *
+     * <p>The API key travels in the {@code X-API-Key} header on every request, so a
+     * plaintext target exposes it to anything on the network path. An {@code http://} URL is
+     * therefore refused unless the host is loopback; pass {@code allowInsecureBaseUrl=true}
+     * to opt out deliberately for a trusted local or in-cluster target.
+     */
+    public NotifierApi(String apiKey, String baseUrl, int connectTimeoutMs, int socketTimeoutMs,
+                       int maxConnectionsPerRoute, boolean allowInsecureBaseUrl) {
         this.apiKey = Objects.requireNonNull(apiKey, "apiKey");
         String base = Objects.requireNonNull(baseUrl, "baseUrl");
-        this.baseUrl = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        base = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        requireSecureBaseUrl(base, allowInsecureBaseUrl);
+        this.baseUrl = base;
 
         PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
         cm.setMaxTotal(maxConnectionsPerRoute);
@@ -313,7 +339,7 @@ public class NotifierApi implements AutoCloseable {
     /** Fetches the current delivery status of a notification by its UUID ({@link SendResult#getId()}). */
     public StatusResult status(String notificationId) {
         Objects.requireNonNull(notificationId, "notificationId");
-        JsonObject resp = getJson("/v1/notifications/" + notificationId);
+        JsonObject resp = getJson("/v1/notifications/" + encodePathSegment(notificationId, "notificationId"));
         return StatusResult.from(resp);
     }
 
@@ -324,7 +350,8 @@ public class NotifierApi implements AutoCloseable {
      */
     public StatusResult statusByProviderMessageId(String providerMessageId) {
         Objects.requireNonNull(providerMessageId, "providerMessageId");
-        JsonObject resp = getJson("/v1/notifications/by-provider-message-id/" + providerMessageId);
+        JsonObject resp = getJson("/v1/notifications/by-provider-message-id/"
+                + encodePathSegment(providerMessageId, "providerMessageId"));
         return StatusResult.from(resp);
     }
 
@@ -467,6 +494,71 @@ public class NotifierApi implements AutoCloseable {
             }
         }
         return new String[]{null, template};
+    }
+
+    /**
+     * Percent-encodes one path segment.
+     *
+     * Without this a value containing {@code /}, {@code ?}, {@code #}, or a newline changes
+     * the shape of the request: {@code status("../../v1/channels")} would address a different
+     * endpoint, and the API key goes out with whatever request results. Values reaching this
+     * method are often opaque ids echoed back from an upstream provider, so they are
+     * attacker-influenced in the general case.
+     *
+     * {@code URLEncoder} targets form bodies, where a space is {@code +}; in a path segment a
+     * space must be {@code %20}, so the plus is corrected after encoding.
+     */
+    private static String encodePathSegment(String value, String field) {
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20");
+        } catch (UnsupportedEncodingException e) {
+            // UTF-8 is guaranteed by the JVM; unreachable in practice.
+            throw new IllegalArgumentException(field + " could not be encoded", e);
+        }
+    }
+
+    /**
+     * Refuses a base URL that would send the API key in cleartext.
+     *
+     * <p>Loopback is exempt because a local target cannot be eavesdropped from the network;
+     * everything else must be https unless the caller opts out explicitly.
+     */
+    private static void requireSecureBaseUrl(String baseUrl, boolean allowInsecure) {
+        URI uri;
+        try {
+            uri = new URI(baseUrl);
+        } catch (URISyntaxException e) {
+            throw new IllegalArgumentException("baseUrl is not a valid URI: " + baseUrl, e);
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            throw new IllegalArgumentException("baseUrl must include a scheme: " + baseUrl);
+        }
+        if ("https".equalsIgnoreCase(scheme)) {
+            return;
+        }
+        if (!"http".equalsIgnoreCase(scheme)) {
+            throw new IllegalArgumentException("baseUrl must use http or https, got: " + scheme);
+        }
+        if (allowInsecure || isLoopbackHost(uri.getHost())) {
+            return;
+        }
+        throw new IllegalArgumentException("baseUrl is not https (" + baseUrl + "); the API key would be "
+                + "sent in cleartext. Use https, or pass allowInsecureBaseUrl=true for a trusted local target.");
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        if (host == null) {
+            return false;
+        }
+        if ("localhost".equalsIgnoreCase(host)) {
+            return true;
+        }
+        try {
+            return InetAddress.getByName(host).isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
     }
 
     private JsonObject postJson(String path, JsonObject body) {
