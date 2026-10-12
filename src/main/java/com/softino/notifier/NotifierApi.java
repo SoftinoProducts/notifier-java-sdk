@@ -14,6 +14,7 @@ import com.softino.notifier.exception.HttpException;
 import com.softino.notifier.exception.NotifierException;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpUriRequest;
@@ -51,6 +52,11 @@ import java.util.Objects;
  * SendResult r = api.send(ChannelType.SMS, "+989120000000", Content.of("Your OTP is 1234"));
  * StatusResult s = api.status(r.getId());
  * }</pre>
+ *
+ * <p>Web Push sends target a registered device id, not the browser's subscription: register the
+ * subscription once with {@link #registerPushDevice(PushSubscription)} and send to the returned id
+ * with {@link #sendToDevice(String, String)}. The browser subscribes with
+ * {@link #getVapidPublicKey()} as its {@code applicationServerKey}.</p>
  *
  * <p>For a Kavenegar-java drop-in facade, see {@link KavenegarApi}.</p>
  */
@@ -403,6 +409,202 @@ public class NotifierApi implements AutoCloseable {
     }
 
     // ------------------------------------------------------------------
+    // Web Push devices
+    //
+    // A Web Push recipient is a device id returned by registerPushDevice, never the browser's
+    // subscription: the subscription's endpoint is a capability, so it is registered once and
+    // the service stores it write-only.
+    // ------------------------------------------------------------------
+
+    /**
+     * Registers a browser push subscription and returns the device to send to.
+     *
+     * <p>Registration is idempotent per subscription: calling it again with the same endpoint
+     * updates that device and returns the same id, so a frontend may call it on every visit. A
+     * service with no active vapid channel answers 404; a tenant at its device limit answers
+     * 409.</p>
+     */
+    public PushDevice registerPushDevice(PushSubscription subscription) {
+        return registerPushDevice(RegisterPushDeviceRequest.of(subscription));
+    }
+
+    /** Registers a browser push subscription under your own user identifier. */
+    public PushDevice registerPushDevice(PushSubscription subscription, String userRef) {
+        return registerPushDevice(RegisterPushDeviceRequest.builder()
+                .subscription(subscription)
+                .userRef(userRef)
+                .build());
+    }
+
+    /**
+     * Registers a browser push subscription with full control over the request: an optional
+     * {@code userRef} and an optional {@code channelId} pinning the vapid channel.
+     *
+     * <p>The subscription, its endpoint and both keys ({@code p256dh}, {@code auth}) are required
+     * and checked locally, so a malformed registration fails before a request is made.</p>
+     */
+    public PushDevice registerPushDevice(RegisterPushDeviceRequest request) {
+        PushSubscription subscription = request == null ? null : request.getSubscription();
+        if (subscription == null) {
+            throw new NotifierException("push subscription is required; build it from the browser's "
+                    + "pushManager.subscribe() result");
+        }
+        if (isBlank(subscription.getEndpoint())) {
+            throw new NotifierException("push subscription endpoint is required");
+        }
+        if (subscription.getKeys() == null
+                || isBlank(subscription.getKeys().getP256dh())
+                || isBlank(subscription.getKeys().getAuth())) {
+            throw new NotifierException("push subscription keys (p256dh, auth) are required");
+        }
+
+        JsonObject body = new JsonObject();
+        // channel_id and user_ref are omitted entirely when blank, as the API expects.
+        if (!isBlank(request.getChannelId())) body.addProperty("channel_id", request.getChannelId().trim());
+        if (!isBlank(request.getUserRef())) body.addProperty("user_ref", request.getUserRef());
+        body.add("subscription", subscription.toJson());
+
+        return PushDevice.from(postJson("/v1/push/devices", body));
+    }
+
+    /**
+     * Returns the value to use as the {@code recipient} of a webpush send for a registered device,
+     * so a caller that needs the generic {@link #send} path (extra options, a channel group) still
+     * names the right thing.
+     *
+     * <p>This is a shape check, not a parse: it rejects a subscription JSON or an {@code https://}
+     * endpoint passed where a device id belongs, because that becomes a failed notification row
+     * that looks like a provider problem.</p>
+     *
+     * @throws NotifierException when the value is blank, looks like a subscription, or is not a
+     *                           36-character uuid
+     */
+    public static String deviceRecipient(String deviceId) {
+        if (isBlank(deviceId)) {
+            throw new NotifierException("push device id is required; register the subscription with "
+                    + "registerPushDevice first");
+        }
+        if (looksLikeSubscription(deviceId)) {
+            throw new NotifierException("recipient for the webpush channel is a device id, not a push "
+                    + "subscription; register the subscription with registerPushDevice and send to the "
+                    + "id it returns");
+        }
+        if (!looksLikeUuid(deviceId)) {
+            throw new NotifierException("push device id \"" + deviceId + "\" is not a uuid; it is the id "
+                    + "returned by registerPushDevice");
+        }
+        return deviceId;
+    }
+
+    /** Fetches one registered device by id. */
+    public PushDevice getPushDevice(String deviceId) {
+        String id = deviceRecipient(deviceId);
+        return PushDevice.from(getJson("/v1/push/devices/" + encodePathSegment(id, "deviceId")));
+    }
+
+    /** Alias for {@link #getPushDevice(String)}; the Go SDK names the same operation {@code PushDevice}. */
+    public PushDevice pushDevice(String deviceId) {
+        return getPushDevice(deviceId);
+    }
+
+    /** Lists one page of the tenant's registered devices, newest first. */
+    public PushDevicePage listPushDevices(PushDeviceQuery query) {
+        PushDeviceQuery q = query == null ? PushDeviceQuery.none() : query;
+        StringBuilder path = new StringBuilder("/v1/push/devices");
+        StringBuilder qs = new StringBuilder();
+        if (!isBlank(q.getUserRef())) appendQuery(qs, "user_ref", q.getUserRef());
+        if (q.getLimit() > 0) appendQuery(qs, "limit", String.valueOf(q.getLimit()));
+        if (q.getOffset() > 0) appendQuery(qs, "offset", String.valueOf(q.getOffset()));
+        if (qs.length() > 0) path.append('?').append(qs);
+
+        return PushDevicePage.from(getJson(path.toString()));
+    }
+
+    /**
+     * Convenience: lists one user's devices. A blank {@code userRef} and non-positive
+     * {@code limit}/{@code offset} are omitted rather than sent as zeros.
+     */
+    public PushDevicePage listPushDevices(String userRef, int limit, int offset) {
+        return listPushDevices(new PushDeviceQuery(userRef, limit, offset));
+    }
+
+    /**
+     * Deletes a device, so it stops receiving notifications. This is the logout path: without it a
+     * signed-out browser keeps receiving the previous user's notifications.
+     */
+    public void deletePushDevice(String deviceId) {
+        String id = deviceRecipient(deviceId);
+        deleteJson("/v1/push/devices/" + encodePathSegment(id, "deviceId"));
+    }
+
+    /**
+     * Returns the public key a browser must subscribe with, for the highest-priority active vapid
+     * channel.
+     */
+    public VapidKey getVapidPublicKey() {
+        return getVapidPublicKey(null);
+    }
+
+    /**
+     * Returns the public key a browser must subscribe with, for one vapid channel; a blank
+     * {@code channelId} selects the highest-priority active one. Returns 404 when the tenant has
+     * no active vapid channel.
+     */
+    public VapidKey getVapidPublicKey(String channelId) {
+        StringBuilder path = new StringBuilder("/v1/push/vapid-public-key");
+        if (!isBlank(channelId)) {
+            StringBuilder qs = new StringBuilder();
+            appendQuery(qs, "channel_id", channelId);
+            path.append('?').append(qs);
+        }
+        return VapidKey.from(getJson(path.toString()));
+    }
+
+    /** Sends a plain Web Push notification to a registered device. */
+    public SendResult sendToDevice(String deviceId, String subject, String body) {
+        return send(ChannelType.WEBPUSH, deviceRecipient(deviceId), new Content(subject, body));
+    }
+
+    /** Sends a plain Web Push notification to a registered device without a subject. */
+    public SendResult sendToDevice(String deviceId, String body) {
+        return sendToDevice(deviceId, null, body);
+    }
+
+    /**
+     * Renders a template on the service and delivers it to a registered device. The template must
+     * exist for the {@code webpush} channel; the values bind positionally to its declared
+     * {@code param_names}.
+     */
+    public SendResult sendTemplateToDevice(String deviceId, String templateName, Object... params) {
+        return sendTemplateByName(ChannelType.WEBPUSH, deviceRecipient(deviceId), templateName, params);
+    }
+
+    /** Catches a subscription JSON or a push endpoint passed where a device id belongs. */
+    private static boolean looksLikeSubscription(String value) {
+        String trimmed = value.trim();
+        return trimmed.startsWith("{") || trimmed.contains("https://");
+    }
+
+    /**
+     * A uuid shape check (36 characters, dashes at 8/13/18/23). It exists to catch a value of the
+     * wrong kind without pulling a uuid dependency into an SDK that otherwise has none.
+     */
+    private static boolean looksLikeUuid(String value) {
+        if (value == null || value.length() != 36) {
+            return false;
+        }
+        for (int i = 0; i < 36; i++) {
+            char c = value.charAt(i);
+            if (i == 8 || i == 13 || i == 18 || i == 23) {
+                if (c != '-') return false;
+            } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------
     // Typed channel accessors (optional). All channels also work via the generic
     // core send() methods, so these are conveniences, not requirements.
     // ------------------------------------------------------------------
@@ -575,6 +777,42 @@ public class NotifierApi implements AutoCloseable {
         get.setHeader("Accept", "application/json");
         get.setHeader("X-API-Key", apiKey);
         return execute(get);
+    }
+
+    /**
+     * Issues a DELETE. A successful response may legitimately carry no body
+     * ({@code DELETE /v1/push/devices/{id}} answers 204), so this path tolerates an empty body
+     * where {@link #execute} would report one as unexpected. Error responses are mapped exactly
+     * as {@link #execute} maps them.
+     */
+    private JsonObject deleteJson(String path) {
+        HttpDelete delete = new HttpDelete(baseUrl + path);
+        delete.setHeader("Accept", "application/json");
+        delete.setHeader("X-API-Key", apiKey);
+        return executeAllowingEmptyBody(delete);
+    }
+
+    private JsonObject executeAllowingEmptyBody(HttpUriRequest request) {
+        try (CloseableHttpResponse response = httpClient.execute(request)) {
+            int code = response.getStatusLine().getStatusCode();
+            // A 204 carries no entity at all, and EntityUtils refuses null, so read defensively.
+            String raw = response.getEntity() == null ? null
+                    : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+            JsonElement parsed = raw == null || raw.isEmpty() ? null : GSON.fromJson(raw, JsonObject.class);
+
+            if (code < 200 || code >= 300) {
+                throw toException(code, parsed);
+            }
+            if (parsed == null || parsed.isJsonNull()) {
+                return null;
+            }
+            if (!parsed.isJsonObject()) {
+                throw new NotifierException("Unexpected response from Notifier API: " + raw);
+            }
+            return parsed.getAsJsonObject();
+        } catch (IOException e) {
+            throw new HttpException("HTTP request failed: " + e.getMessage(), 0);
+        }
     }
 
     private JsonObject execute(HttpUriRequest request) {

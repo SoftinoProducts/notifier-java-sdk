@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.5</version>
+    <version>1.0.6</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.5' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.6' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -267,6 +267,34 @@ StatusResult byProvider = api.statusByProviderMessageId(r.getProviderMessageId()
 
 ---
 
+## Web Push devices
+
+A Web Push recipient is a **device id**, not the browser's subscription. Register the browser's
+subscription once, then send to the id it returns:
+
+```java
+// The frontend calls registration.pushManager.subscribe({ applicationServerKey, userVisibleOnly: true })
+// and posts endpoint + keys.p256dh + keys.auth to your backend.
+VapidKey vapid = api.getVapidPublicKey();   // pass vapid.getPublicKey() to the browser as applicationServerKey
+
+PushDevice device = api.registerPushDevice(
+        PushSubscription.of(endpoint, p256dh, auth), "user-42");
+
+api.sendToDevice(device.getId(), "Order ready", "Your order has shipped.");
+api.sendTemplateToDevice(device.getId(), "order-ready", "12345");
+
+api.deletePushDevice(device.getId());       // logout: stop sending to this browser
+```
+
+Registering the same subscription again updates the same device and returns the same id, so a
+frontend may call it on every visit. `api.listPushDevices("user-42", 100, 0)` returns one user's
+devices, newest first; each item's `isUsable()` is false once the push service has reported the
+subscription gone. `NotifierApi.deviceRecipient(deviceId)` returns the device id to use with the
+generic `send(...)` path, and rejects a subscription JSON or an `https://` endpoint — passing one
+of those as a recipient can never work.
+
+---
+
 ## Error handling
 
 | Exception | Meaning |
@@ -338,7 +366,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.5` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.6` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
