@@ -27,6 +27,10 @@ public final class SendResult {
     private final String error;
     private final boolean simulated;
 
+    // Present on a send through a saved fan-out route. Absent on a single-channel send.
+    private final String fanoutId;
+    private final String fanoutStatus;
+
     public SendResult(String id, String status, String channelType, String recipient,
                       String subject, String body, String sendAt, String createdAt, String updatedAt) {
         this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt, null, null, null, false);
@@ -42,6 +46,14 @@ public final class SendResult {
     public SendResult(String id, String status, String channelType, String recipient,
                       String subject, String body, String sendAt, String createdAt, String updatedAt,
                       String provider, String providerMessageId, String error, boolean simulated) {
+        this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt,
+                provider, providerMessageId, error, simulated, null, null);
+    }
+
+    public SendResult(String id, String status, String channelType, String recipient,
+                      String subject, String body, String sendAt, String createdAt, String updatedAt,
+                      String provider, String providerMessageId, String error, boolean simulated,
+                      String fanoutId, String fanoutStatus) {
         this.id = id;
         this.status = status;
         this.channelType = channelType;
@@ -55,6 +67,8 @@ public final class SendResult {
         this.providerMessageId = providerMessageId;
         this.error = error;
         this.simulated = simulated;
+        this.fanoutId = fanoutId;
+        this.fanoutStatus = fanoutStatus;
     }
 
     // ---- Core accessors ----
@@ -72,6 +86,10 @@ public final class SendResult {
     /** The provider message id (e.g. Kavenegar {@code messageid}, SMS.ir {@code messageId}) when known. */
     public String getProviderMessageId() { return providerMessageId; }
     public String getError() { return error; }
+    /** The fanout id when this send went through a saved route, otherwise null. */
+    public String getFanoutId() { return fanoutId; }
+    /** Aggregate fanout status (queued, delivered, failed, partial, skipped), otherwise null. */
+    public String getFanoutStatus() { return fanoutStatus; }
 
     /**
      * Kavenegar-compat alias. In Notifier the identifier is a UUID, so this returns the
@@ -111,7 +129,9 @@ public final class SendResult {
                 o.has("created_at") ? o.get("created_at").getAsString() : null,
                 o.has("updated_at") ? o.get("updated_at").getAsString() : null,
                 provider, pmi, error,
-                o.has("simulated") && !o.get("simulated").isJsonNull() && o.get("simulated").getAsBoolean());
+                o.has("simulated") && !o.get("simulated").isJsonNull() && o.get("simulated").getAsBoolean(),
+                o.has("fanout_id") && !o.get("fanout_id").isJsonNull() ? o.get("fanout_id").getAsString() : null,
+                o.has("fanout_status") && !o.get("fanout_status").isJsonNull() ? o.get("fanout_status").getAsString() : null);
     }
 
     @Override

@@ -238,12 +238,14 @@ public class KavenegarApi {
                                    Boolean simulated) {
         // Positional: values are sent as an ordered template_params array and bound to the
         // template's declared param_names (mirrors Kavenegar's %token%, %token2%, %token3%).
-        // The template may be "group:template" to also route via a channel group by name.
-        final String[] gt = splitGroup(template);
+        // The template may be "group:template" to route via a channel group, or
+        // "route:name" to send through a saved fan-out route. The facade signature is
+        // unchanged; the prefix only changes how the backend resolves the send.
+        final Ref ref = parseRef(template);
         return execute(() -> {
             Object[] params = nonEmptyTokens(token, token2, token3);
-            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1],
-                    options(gt[0], simulated), params));
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, ref.template,
+                    options(ref, simulated), params));
         });
     }
 
@@ -255,7 +257,7 @@ public class KavenegarApi {
     /** Sends a template lookup with named parameters, optionally rehearsing it. */
     public SendResult verifyLookup(String receptor, String token, String token2, String token3,
                                    String template, List<PairValue> params, Boolean simulated) {
-        final String[] gt = splitGroup(template);
+        final Ref ref = parseRef(template);
         return execute(() -> {
             Map<String, Object> vars = new java.util.LinkedHashMap<>(tokens(token, token2, token3));
             if (params != null) {
@@ -265,8 +267,8 @@ public class KavenegarApi {
                     }
                 }
             }
-            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, gt[1], vars,
-                    options(gt[0], simulated)));
+            return toSend(core.sendTemplateByName(ChannelType.SMS, receptor, ref.template, vars,
+                    options(ref, simulated)));
         });
     }
 
@@ -286,10 +288,12 @@ public class KavenegarApi {
      * Builds the send options for a lookup: the group shorthand (when present) and whether the
      * send is a rehearsal. Kept in one place so both overloads cannot drift apart.
      */
-    private static SendOptions options(String groupName, Boolean simulated) {
+    private static SendOptions options(Ref ref, Boolean simulated) {
         SendOptions.Builder b = SendOptions.builder();
-        if (groupName != null) {
-            b.groupName(groupName);
+        if (ref.route != null) {
+            b.routeName(ref.route);
+        } else if (ref.group != null) {
+            b.groupName(ref.group);
         }
         if (simulated != null && simulated) {
             b.simulated(true);
@@ -297,15 +301,34 @@ public class KavenegarApi {
         return b.build();
     }
 
-    // "group:template" → {group, template}; no (or malformed) ':' → {null, template}.
-    private static String[] splitGroup(String template) {
+    /** A parsed "route:name", "group:template" or plain template reference. */
+    private static final class Ref {
+        final String route;
+        final String group;
+        final String template;
+
+        Ref(String route, String group, String template) {
+            this.route = route;
+            this.group = group;
+            this.template = template;
+        }
+    }
+
+    // "route:name" → {route, null, null}; "group:template" → {null, group, template};
+    // no (or malformed) ':' → {null, null, template}.
+    private static Ref parseRef(String template) {
         if (template != null) {
             int idx = template.indexOf(':');
             if (idx > 0 && idx < template.length() - 1) {
-                return new String[]{template.substring(0, idx), template.substring(idx + 1)};
+                String prefix = template.substring(0, idx);
+                String rest = template.substring(idx + 1);
+                if ("route".equals(prefix)) {
+                    return new Ref(rest, null, null);
+                }
+                return new Ref(null, prefix, rest);
             }
         }
-        return new String[]{null, template};
+        return new Ref(null, null, template);
     }
 
     private static Map<String, Object> tokens(String token, String token2, String token3) {

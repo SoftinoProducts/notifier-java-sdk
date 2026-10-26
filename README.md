@@ -329,6 +329,25 @@ try {
 All channels use the same `sendTemplateByName`/`send` calls. Use `ChannelType.of("whatsapp")` for a
 channel you define yourself.
 
+### Saved routes: `"route:name"`
+
+A saved route is a named fan-out (for example `otp` = SMS + Bale). It is addressed with the same
+`prefix:name` grammar as a group, so the facade signature does not change:
+
+```java
+// Kavenegar facade: the call site only changes its template string.
+kavenegar.verifyLookup(receptor, token, "", "", "route:otp");
+```
+
+```java
+// Core SDK:
+api.sendTemplateByName(ChannelType.SMS, phone, "route:otp", "123456");
+```
+
+The `channel_type` argument is ignored for a route. `SendResult.getFanoutId()` and
+`getFanoutStatus()` expose the aggregate when present; the normal `getId()`/`getStatus()` describe
+the primary leg.
+
 ### Also available
 
 - **Bulk send** — `api.bulk(ChannelType.SMS, List<RecipientMessage>)`; each `RecipientMessage` supports a

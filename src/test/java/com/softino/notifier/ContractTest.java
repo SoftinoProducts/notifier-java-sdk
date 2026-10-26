@@ -371,4 +371,28 @@ public class ContractTest {
         assertTrue("should reference the group by name", body.contains("\"group_name\":\"sms-sale\""));
         assertTrue("should keep the template name", body.contains("\"template_name\":\"verify\""));
     }
+
+    // A saved fan-out route is addressed with the same "prefix:name" grammar as a group.
+    // The call site keeps its signature; only the string changes.
+    @Test
+    public void sendTemplateByName_routeShorthand_emitsRouteNameAndOmitsChannelType() {
+        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        api.sendTemplateByName(ChannelType.SMS, "+989120000000", "route:otp", "123456");
+        String body = lastRequestBody.get();
+        assertTrue(body.contains("\"route_name\":\"otp\""));
+        assertFalse("the route defines the channel", body.contains("\"channel_type\""));
+        assertFalse("the route defines the templates", body.contains("\"template_name\""));
+        assertTrue(body.contains("\"template_params\":[\"123456\"]"));
+    }
+
+    @Test
+    public void verifyLookup_routeShorthand_keepsFacadeSignature() {
+        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        api.verifyLookup("+989120000000", "123456", "route:otp");
+        String body = lastRequestBody.get();
+        assertTrue(body.contains("\"route_name\":\"otp\""));
+        assertFalse(body.contains("\"channel_type\""));
+        assertFalse(body.contains("\"group_name\""));
+        assertTrue(body.contains("\"template_params\":[\"123456\"]"));
+    }
 }

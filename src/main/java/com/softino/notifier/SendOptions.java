@@ -18,6 +18,7 @@ public final class SendOptions {
     private final String channelId;       // optional channel override (UUID)
     private final String groupId;         // optional load-balanced channel group (UUID)
     private final String groupName;       // optional channel group name (resolved server-side)
+    private final String routeName;       // optional saved fan-out route (resolved server-side)
     private final String templateId;      // optional template (UUID); content is rendered server-side
     private final String templateName;    // optional template name; resolved server-side
     private final Map<String, Object> templateVars;
@@ -33,6 +34,7 @@ public final class SendOptions {
         this.channelId = b.channelId;
         this.groupId = b.groupId;
         this.groupName = b.groupName;
+        this.routeName = b.routeName;
         this.templateId = b.templateId;
         this.templateName = b.templateName;
         this.templateVars = b.templateVars == null ? null
@@ -59,6 +61,7 @@ public final class SendOptions {
     public String getChannelId() { return channelId; }
     public String getGroupId() { return groupId; }
     public String getGroupName() { return groupName; }
+    public String getRouteName() { return routeName; }
     public String getTemplateId() { return templateId; }
     public String getTemplateName() { return templateName; }
     public Map<String, Object> getTemplateVars() { return templateVars; }
@@ -79,6 +82,7 @@ public final class SendOptions {
         private String channelId;
         private String groupId;
         private String groupName;
+        private String routeName;
         private String templateId;
         private String templateName;
         private Map<String, Object> templateVars;
@@ -94,6 +98,12 @@ public final class SendOptions {
         public Builder groupId(String groupId) { this.groupId = groupId; return this; }
         /** Reference a channel group by name; the backend resolves it to a group id for routing. */
         public Builder groupName(String groupName) { this.groupName = groupName; return this; }
+        /**
+         * Reference a saved fan-out route by name. The route defines every channel,
+         * template and recipient source, so {@code channel_type} is omitted from the
+         * request and the channel type argument is ignored.
+         */
+        public Builder routeName(String routeName) { this.routeName = routeName; return this; }
         public Builder templateId(String templateId) { this.templateId = templateId; return this; }
         public Builder templateName(String templateName) { this.templateName = templateName; return this; }
         public Builder templateVar(String name, Object value) {

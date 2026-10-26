@@ -275,6 +275,7 @@ public class NotifierApi implements AutoCloseable {
         if (o.getChannelId() != null) b.channelId(o.getChannelId());
         if (o.getGroupId() != null) b.groupId(o.getGroupId());
         if (o.getGroupName() != null) b.groupName(o.getGroupName());
+        if (o.getRouteName() != null) b.routeName(o.getRouteName());
         if (o.getIdempotencyKey() != null) b.idempotencyKey(o.getIdempotencyKey());
         if (o.getSendAt() != null) b.sendAt(o.getSendAt());
         if (o.getCallbackUrl() != null) b.callbackUrl(o.getCallbackUrl());
@@ -313,10 +314,15 @@ public class NotifierApi implements AutoCloseable {
             }
             if (m.getTemplateId() != null) jo.addProperty("template_id", m.getTemplateId());
             if (m.getTemplateName() != null) {
-                // Support "group-name:template-name" shorthand for group routing by name.
-                String[] gt = splitGroup(m.getTemplateName());
-                if (gt[0] != null) jo.addProperty("group_name", gt[0]);
-                jo.addProperty("template_name", gt[1]);
+                // The batch has one channel_type, so a route (which defines its own
+                // channels) is not meaningful here; fail loudly instead of sending to
+                // the wrong place.
+                Ref ref = parseRef(m.getTemplateName());
+                if (ref.route != null) {
+                    throw new NotifierException("bulk sends do not support the route: shorthand; use a single send");
+                }
+                if (ref.group != null) jo.addProperty("group_name", ref.group);
+                jo.addProperty("template_name", ref.template);
             }
             if (m.getTemplateVars() != null && !m.getTemplateVars().isEmpty()) {
                 jo.add("template_vars", GSON.toJsonTree(m.getTemplateVars()));
@@ -631,7 +637,6 @@ public class NotifierApi implements AutoCloseable {
 
     private JsonObject buildSendBody(ChannelType type, String recipient, Content content, SendOptions o) {
         JsonObject body = new JsonObject();
-        body.addProperty("channel_type", type.getValue());
         body.addProperty("recipient", recipient);
         if (content != null) {
             if (content.getSubject() != null) body.addProperty("subject", content.getSubject());
@@ -640,17 +645,32 @@ public class NotifierApi implements AutoCloseable {
         if (o.getChannelId() != null) body.addProperty("channel_id", o.getChannelId());
         if (o.getGroupId() != null) body.addProperty("group_id", o.getGroupId());
 
-        // A template may be given as "group-name:template-name" to route via a channel group
-        // by name. Split it here so every send-using-a-template path supports the shorthand.
-        // An explicit groupName on the options wins over the prefix in the template name.
+        // A template may be given as "group-name:template-name" to route via a channel group,
+        // or as "route:name" to send through a saved fan-out route. An explicit option wins
+        // over the prefix. A route request must not carry a channel_type: the route defines
+        // every channel, so the type argument is ignored.
+        String routeName = o.getRouteName();
         String groupName = o.getGroupName();
         String templateName = o.getTemplateName();
         if (templateName != null) {
-            String[] gt = splitGroup(templateName);
-            if (gt[0] != null) {
-                if (groupName == null) groupName = gt[0];
-                templateName = gt[1];
+            Ref ref = parseRef(templateName);
+            if (ref.route != null) {
+                if (routeName == null) routeName = ref.route;
+                templateName = ref.template;
+            } else if (ref.group != null) {
+                if (groupName == null) groupName = ref.group;
+                templateName = ref.template;
+            } else {
+                templateName = ref.template;
             }
+        }
+        if (routeName != null) {
+            if (groupName != null) {
+                throw new NotifierException("a route send cannot also set a channel group");
+            }
+            body.addProperty("route_name", routeName);
+        } else {
+            body.addProperty("channel_type", type.getValue());
         }
         if (groupName != null) body.addProperty("group_name", groupName);
         if (o.getTemplateId() != null) body.addProperty("template_id", o.getTemplateId());
@@ -674,9 +694,10 @@ public class NotifierApi implements AutoCloseable {
         if (o.getLocale() != null) body.addProperty("locale", o.getLocale());
         if (o.isSimulated()) body.addProperty("simulated", true);
 
-        // At least one of body / template_id / template_name must be present.
+        // At least one of body / template_id / template_name must be present. A
+        // route send is the exception: the route itself selects the templates.
         boolean missingContent = !body.has("body") || isBlank(body.get("body").getAsString());
-        if (missingContent && !body.has("template_id") && !body.has("template_name")) {
+        if (routeName == null && missingContent && !body.has("template_id") && !body.has("template_name")) {
             throw new NotifierException("body, template_id, or template_name is required");
         }
         return body;
@@ -686,16 +707,33 @@ public class NotifierApi implements AutoCloseable {
         return s == null || s.trim().isEmpty();
     }
 
-    /** Splits a "group-name:template-name" string into {group, template}. No (or malformed)
-     *  ':' yields {null, template} — so plain template names pass through untouched. */
-    private static String[] splitGroup(String template) {
+    /** A parsed "route:name", "group:template" or plain template reference. */
+    private static final class Ref {
+        final String route;
+        final String group;
+        final String template;
+
+        Ref(String route, String group, String template) {
+            this.route = route;
+            this.group = group;
+            this.template = template;
+        }
+    }
+
+    /** Parses "route:name", "group-name:template-name" or a plain template name. */
+    private static Ref parseRef(String template) {
         if (template != null) {
             int idx = template.indexOf(':');
             if (idx > 0 && idx < template.length() - 1) {
-                return new String[]{template.substring(0, idx), template.substring(idx + 1)};
+                String prefix = template.substring(0, idx);
+                String rest = template.substring(idx + 1);
+                if ("route".equals(prefix)) {
+                    return new Ref(rest, null, null);
+                }
+                return new Ref(null, prefix, rest);
             }
         }
-        return new String[]{null, template};
+        return new Ref(null, null, template);
     }
 
     /**
