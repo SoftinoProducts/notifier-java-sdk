@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.6</version>
+    <version>1.0.7</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.6' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.7' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -385,7 +385,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.6` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.7` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
