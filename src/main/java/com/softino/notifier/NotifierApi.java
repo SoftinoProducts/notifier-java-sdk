@@ -665,9 +665,6 @@ public class NotifierApi implements AutoCloseable {
             }
         }
         if (routeName != null) {
-            if (templateName != null) {
-                throw new NotifierException("a route send cannot also set template_name");
-            }
             if (groupName != null) {
                 throw new NotifierException("a route send cannot also set a channel group");
             }

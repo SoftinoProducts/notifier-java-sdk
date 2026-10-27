@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.7</version>
+    <version>1.0.8</version>
 </dependency>
 ```
 
@@ -34,7 +34,7 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.7' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.8' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
@@ -398,6 +398,30 @@ api.send(ChannelType.SMS, phone, Content.of(""),
                 .build());
 ```
 
+A target can instead let the request choose the template. Set
+`template_source: "request"` and omit its template; the send supplies `template_name` (or
+`template_id`), resolved for that target's channel type. One generic Telegram route can
+then serve any notification category:
+
+```json
+{
+  "name": "telegram-generic",
+  "targets": [
+    {"channel_type": "telegram", "channel_id": "TELEGRAM_CHANNEL_ID", "template_source": "request", "recipient_source": "binding", "required": false}
+  ]
+}
+```
+
+```java
+api.sendTemplateByName(ChannelType.TELEGRAM, phone, "otp-login",
+        SendOptions.builder().routeName("telegram-generic").build(),
+        "123456");
+```
+
+`ChannelType.TELEGRAM` is ignored; the route decides the channel. A send through a route
+without a `template_source: "request"` target rejects a request template with `400`; a
+request-template target without one is also `400`.
+
 A route definition created once in the UI or with the API looks like this:
 
 ```json
@@ -434,10 +458,35 @@ curl -X POST "https://notifier-api.vibe.ir/v1/channels/$TELEGRAM_CHANNEL_ID/bind
 
 The response contains `token`, `deep_link` and `expires_at`. Send the user to `deep_link`;
 after they press **Start**, the phone is bound to that Telegram chat and a route send to
-the phone resolves the Telegram leg automatically. List bindings with
-`GET /v1/channels/{channel_id}/bindings`; remove one by its binding id with
-`DELETE /v1/channels/{channel_id}/bindings/{binding_id}`. The token is single-use and
-expires after 15 minutes.
+the phone resolves the Telegram leg automatically. The token is single-use and expires
+after 15 minutes.
+
+`GET /v1/channels/{channel_id}/bindings` returns a **bare JSON array** (no `items` envelope
+and no pagination), newest first:
+
+```json
+[
+  {
+    "id": "8f0c0f6e-...",
+    "channel_id": "53ea93ef-...",
+    "external_ref": "+989120000000",
+    "chat_id": "67313260",
+    "created_at": "2026-10-27T11:00:00Z",
+    "updated_at": "2026-10-27T11:00:00Z"
+  }
+]
+```
+
+Remove one by its binding `id`:
+
+```bash
+curl -X DELETE "https://notifier-api.vibe.ir/v1/channels/$TELEGRAM_CHANNEL_ID/bindings/$BINDING_ID" \
+  -H "X-API-Key: $NOTIFIER_API_KEY"    # 204 No Content
+```
+
+An unknown binding id returns `404`; an invalid UUID returns `400`. Bindings are scoped to
+the channel and tenant. One chat maps to one phone: a later `/start` for the same chat
+rebinds it to the new phone and removes the old phone's binding.
 
 #### What the route call returns
 
@@ -503,7 +552,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.7` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.0.8` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
