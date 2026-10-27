@@ -326,27 +326,145 @@ try {
 | `ChannelType.SLACK` | `slack` | |
 | `ChannelType.BALE` | `bale` | Safir / Bale messenger |
 
+### Telegram and Bale
+
+Both are ordinary channels: create a template with `channel_type: "telegram"` or
+`"bale"` and declare its `param_names`, exactly as for SMS. For a **direct** send the
+recipient is the messenger chat id:
+
+```java
+// Direct Telegram: recipient is the numeric chat id.
+api.telegram().send("67313260", "Your verification code is 123456");
+api.sendTemplateByName(ChannelType.TELEGRAM, "67313260", "telegram-otp", "123456");
+
+// Direct Bale: recipient is the Bale chat id.
+api.bale().send("123456789", "Your verification code is 123456");
+api.sendTemplateByName(ChannelType.BALE, "123456789", "bale-otp", "123456");
+```
+
+Prefer `sendTemplateByName`: the template is rendered and localized server-side, and the
+values bind positionally to the template's `param_names`. `api.telegram()` and
+`api.bale()` are typed conveniences over the same core send path; they are optional.
+
+A direct Telegram send needs a chat id and does **not** use a binding. A route that sends
+to a phone number can resolve the phone to a Telegram chat through a binding; that is the
+`recipient_source: "binding"` mode described below. Bale has no binding step: use the Bale
+chat id.
+
 All channels use the same `sendTemplateByName`/`send` calls. Use `ChannelType.of("whatsapp")` for a
 channel you define yourself.
 
-### Saved routes: `"route:name"`
+### Saved routes: `"route:name"` (fan-out)
 
-A saved route is a named fan-out (for example `otp` = SMS + Bale). It is addressed with the same
-`prefix:name` grammar as a group, so the facade signature does not change:
+A saved route is a named fan-out defined in Notifier (UI or
+`POST /v1/notification-routes`). It is not a channel group:
+
+| | Channel group | Saved route |
+|---|---|---|
+| Purpose | failover inside one channel type | deliver over every selected target |
+| Targets | channels of one type | up to five targets, possibly different types |
+| Result | one notification | one child notification per target, grouped by `fanout_id` |
+| SDK syntax | `"group:template"` | `"route:<name>"` |
+| Bulk | allowed | rejected (`route:` is per-recipient) |
+
+The route owns its channels, templates, recipient sources and required flags. The SDK
+only names it:
 
 ```java
-// Kavenegar facade: the call site only changes its template string.
-kavenegar.verifyLookup(receptor, token, "", "", "route:otp");
+SendResult r = api.sendTemplateByName(ChannelType.SMS, phone, "route:otp", "123456");
 ```
+
+`ChannelType.SMS` is ignored for a route: the route defines every channel. A `route:`
+send must not also set `template_name`, `group_name` or `channel_id`; the SDK rejects that
+combination before calling the API.
+
+Make retries safe with an idempotency key. Replaying the same key returns the original
+fanout instead of sending the targets again:
 
 ```java
-// Core SDK:
-api.sendTemplateByName(ChannelType.SMS, phone, "route:otp", "123456");
+SendResult r = api.sendTemplateByName(ChannelType.SMS, phone, "route:otp",
+        SendOptions.builder().idempotencyKey("otp-" + requestId).build(),
+        "123456");
 ```
 
-The `channel_type` argument is ignored for a route. `SendResult.getFanoutId()` and
-`getFanoutStatus()` expose the aggregate when present; the normal `getId()`/`getStatus()` describe
-the primary leg.
+For code that builds options dynamically, use `send` (not `sendTemplateByName`) so no
+`template_name` is added:
+
+```java
+api.send(ChannelType.SMS, phone, Content.of(""),
+        SendOptions.builder()
+                .routeName("otp")
+                .templateParam("123456")
+                .build());
+```
+
+A route definition created once in the UI or with the API looks like this:
+
+```json
+{
+  "name": "otp",
+  "targets": [
+    {"channel_type": "sms", "channel_id": "SMS_CHANNEL_ID", "template_id": "SMS_TEMPLATE_ID", "recipient_source": "request", "required": true},
+    {"channel_type": "bale", "channel_id": "BALE_CHANNEL_ID", "template_id": "BALE_TEMPLATE_ID", "recipient_source": "request", "required": true},
+    {"channel_type": "telegram", "channel_id": "TELEGRAM_CHANNEL_ID", "template_id": "TELEGRAM_TEMPLATE_ID", "recipient_source": "binding", "required": false}
+  ]
+}
+```
+
+- `recipient_source: "request"` sends to the route's `recipient` (the phone number).
+- `recipient_source: "binding"` is for Telegram: the service resolves the phone to a
+  chat id through `channel_bindings`.
+- `required: true` makes a missing Telegram binding fail the send with
+  `400 no telegram binding for <phone>`. With `required: false`, that leg is reported as
+  `skipped` instead.
+- The route and every target template must be active, and all templates must declare the
+  same number of parameters (the API validates this; a route has at most five targets).
+
+#### Binding a Telegram chat
+
+Binding is an account-management operation, not a send; the SDKs do not wrap it. Create a
+one-time deep link with the REST API:
+
+```bash
+curl -X POST "https://notifier-api.vibe.ir/v1/channels/$TELEGRAM_CHANNEL_ID/bindings" \
+  -H "X-API-Key: $NOTIFIER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_ref":"+989120000000"}'
+```
+
+The response contains `token`, `deep_link` and `expires_at`. Send the user to `deep_link`;
+after they press **Start**, the phone is bound to that Telegram chat and a route send to
+the phone resolves the Telegram leg automatically. List bindings with
+`GET /v1/channels/{channel_id}/bindings`; remove one by its binding id with
+`DELETE /v1/channels/{channel_id}/bindings/{binding_id}`. The token is single-use and
+expires after 15 minutes.
+
+#### What the route call returns
+
+The call returns after the child legs are created; it does not wait for delivery:
+
+```java
+System.out.println(r.getId());           // primary notification UUID
+System.out.println(r.getStatus());       // usually queued
+System.out.println(r.getFanoutId());     // fanout UUID, null on a single-channel send
+System.out.println(r.getFanoutStatus()); // queued | processing | delivered | failed | partial | skipped
+```
+
+Poll the primary leg with `api.status(r.getId())`. To inspect every child, call the fanout
+endpoint (the SDKs do not wrap it):
+
+```bash
+curl -H "X-API-Key: $NOTIFIER_API_KEY" \
+  "https://notifier-api.vibe.ir/v1/notification-fanouts/$FANOUT_ID"
+```
+
+`targets[]` reports each leg's `channel_type`, `recipient`, `status`, `notification_id` and
+failure reason. The aggregate is `delivered` only when the required legs are delivered; an
+optional missing binding is `skipped`, and a mix of delivered and failed legs is `partial`.
+The route's children are independent notifications, so retrying one leg does not resend
+the others.
+
+Bulk sends (`api.bulk`) reject `route:` because a batch is scoped to one channel type.
 
 ### Also available
 
