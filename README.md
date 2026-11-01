@@ -616,8 +616,10 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.1.0` (or newer) and it serves
-`com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
+JitPack builds from a GitHub tag. Push `v1.1.0` (or newer) and it serves
+`com.github.SoftinoProducts:notifier-java-sdk:<tag>`, for example
+`com.github.SoftinoProducts:notifier-java-sdk:v1.1.0`. Release tags are `v`-prefixed because
+the Maven Central publish workflow keys on `v*`; the artifact version comes from `pom.xml`.
 
 ---
 
