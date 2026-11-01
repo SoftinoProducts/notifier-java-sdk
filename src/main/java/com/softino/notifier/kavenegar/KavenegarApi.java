@@ -35,7 +35,7 @@ import java.util.concurrent.Callable;
  * com.softino.notifier.kavenegar}. Calls are delegated to the channel-agnostic core
  * {@link NotifierApi}, which routes to whatever SMS provider is configured on the tenant.</p>
  *
- * <p>Semantic differences to be aware of (Notifier is a UUID-keyed, async, multi-provider hub):
+ * <p>Semantic differences to be aware of (Notifier is a UUID-keyed, async, multi-provider hub):</p>
  * <ul>
  *   <li>{@code messageId} in {@link SendResult}/{@link StatusResult} is derived from the
  *       provider message id when available, else {@code 0}, because Notifier does not return
@@ -46,7 +46,6 @@ import java.util.concurrent.Callable;
  *   <li>Kavenegar features Notifier does not expose throw a Kavenegar-typed
  *       {@link BaseException} describing the gap rather than silently misbehaving.</li>
  * </ul>
- * </p>
  */
 public class KavenegarApi {
 

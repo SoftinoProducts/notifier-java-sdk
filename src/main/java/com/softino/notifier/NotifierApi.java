@@ -58,7 +58,8 @@ import java.util.Objects;
  * with {@link #sendToDevice(String, String)}. The browser subscribes with
  * {@link #getVapidPublicKey()} as its {@code applicationServerKey}.</p>
  *
- * <p>For a Kavenegar-java drop-in facade, see {@link KavenegarApi}.</p>
+ * <p>For a Kavenegar-java drop-in facade, see
+ * {@link com.softino.notifier.kavenegar.KavenegarApi}.</p>
  */
 public class NotifierApi implements AutoCloseable {
 
@@ -358,7 +359,8 @@ public class NotifierApi implements AutoCloseable {
     /**
      * Fetches the delivery status of a notification by the provider message id (e.g. the
      * Kavenegar {@code messageid} / SMS.ir {@code messageId}) rather than the Notifier UUID.
-     * This supports the Kavenegar-compatible {@link KavenegarApi#status(Long)} facade.
+     * This supports the Kavenegar-compatible
+     * {@link com.softino.notifier.kavenegar.KavenegarApi#status(long)} facade.
      */
     public StatusResult statusByProviderMessageId(String providerMessageId) {
         Objects.requireNonNull(providerMessageId, "providerMessageId");
