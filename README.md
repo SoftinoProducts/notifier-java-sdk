@@ -267,6 +267,70 @@ StatusResult byProvider = api.statusByProviderMessageId(r.getProviderMessageId()
 
 ---
 
+## Receiving callbacks
+
+When a send carries a `callback_url`, Notifier POSTs a status event to it. The request is
+signed so a receiver can tell a genuine callback from a forged one:
+
+| Header | Value |
+| --- | --- |
+| `X-Notifier-Signature` | `sha256=<hex>` |
+| `X-Notifier-Timestamp` | Unix **seconds** |
+
+The signed material is `"<timestamp>.<raw body>"`:
+
+```text
+sha256=<lowercase hex>( HMAC-SHA256(webhook_secret, X-Notifier-Timestamp + "." + raw_body) )
+```
+
+The digest covers the exact body bytes, so verify **before** parsing the JSON: decoding and
+re-encoding changes whitespace and field order and the signature will never match. A digest
+over the body alone is the old, broken scheme and is refused.
+
+```java
+private static final CallbackVerifier VERIFIER =
+        CallbackVerifier.forSecret(System.getenv("NOTIFIER_WEBHOOK_SECRET"));
+
+protected void doPost(HttpServletRequest req, HttpServletResponse res) throws IOException {
+    byte[] raw = readAll(req.getInputStream());   // raw bytes, before any JSON parsing
+    try {
+        VERIFIER.verifyOrThrow(raw,
+                req.getHeader(CallbackVerifier.TIMESTAMP_HEADER),
+                req.getHeader(CallbackVerifier.SIGNATURE_HEADER));
+    } catch (CallbackSignatureException e) {
+        // e.getReason() is MISSING_TIMESTAMP, STALE_TIMESTAMP, INVALID_SIGNATURE or MISSING_BODY
+        res.sendError(HttpServletResponse.SC_UNAUTHORIZED, e.getMessage());
+        return;
+    }
+
+    CallbackEvent event = CallbackEvent.fromJson(new String(raw, StandardCharsets.UTF_8));
+    if (event.isDelivered()) {
+        // event.getNotificationId(), event.getChannelType(), event.getFanoutId()
+    }
+    res.setStatus(HttpServletResponse.SC_NO_CONTENT);
+}
+```
+
+A callback older than the tolerance window (300 seconds by default, `withTimestampTolerance`)
+is refused even though its digest is valid: otherwise a captured request could be replayed
+forever. The verifier compares in constant time and is safe for concurrent use.
+
+A fixed vector you can test an implementation with, in any language:
+
+```text
+secret    = whsec_test_secret
+timestamp = 1730000000
+body      = {"notification_id":"801e8e60-4686-4cba-8068-e36c88618b16","status":"delivered","channel_type":"telegram"}
+
+signature = 79c471e9051eb5cb40beba0463903244d673cd74a0361ab9114daece83c38114
+body-only = 6e3cc01bb604f7cd43b6a4b6ec86456ec0853155581b3f70a03e2d9ccc6c3ba6   (must be refused)
+```
+
+The service retries a callback on any non-2xx response: three attempts, 500 ms then 1 s
+apart, inside a 10 s timeout. Answer `204` once the event is accepted.
+
+---
+
 ## Web Push devices
 
 A Web Push recipient is a **device id**, not the browser's subscription. Register the browser's
@@ -552,7 +616,7 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `1.0.8` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `1.1.0` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`.
 
 ---
