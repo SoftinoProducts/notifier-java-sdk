@@ -17,6 +17,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,6 +48,7 @@ public class PushDeviceTest {
 
     private HttpServer server;
     private String baseUrl;
+    private final List<NotifierApi> clients = new ArrayList<NotifierApi>();
 
     private final AtomicInteger requests = new AtomicInteger();
     private final AtomicReference<String> lastMethod = new AtomicReference<>();
@@ -65,6 +68,11 @@ public class PushDeviceTest {
 
     @After
     public void stop() {
+        // Close the clients first: an idle keep-alive connection can make HttpServer.stop(0)
+        // block on some JDK 8 builds.
+        for (NotifierApi client : clients) {
+            client.close();
+        }
         if (server != null) {
             server.stop(0);
         }
@@ -181,7 +189,9 @@ public class PushDeviceTest {
     }
 
     private NotifierApi api() {
-        return new NotifierApi("test-key", baseUrl);
+        NotifierApi client = new NotifierApi("test-key", baseUrl);
+        clients.add(client);
+        return client;
     }
 
     private static PushSubscription subscription() {

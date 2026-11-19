@@ -6,7 +6,7 @@
 
     <groupId>com.softino</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
     <packaging>jar</packaging>
 
     <name>Notifier Java SDK</name>
@@ -34,9 +34,17 @@
              removes the exposure rather than relying on that reasoning. -->
         <gson.version>2.11.0</gson.version>
         <httpclient.version>4.5.14</httpclient.version>
+        <httpasyncclient.version>4.1.5</httpasyncclient.version>
+        <!-- httpasyncclient 4.1.5 asks for httpcore-nio 4.4.15; 4.4.16 is the current
+             4.x patch and is already used by the blocking client's httpcore line. -->
+        <httpcore-nio.version>4.4.16</httpcore-nio.version>
         <!-- 4.12 is affected by CVE-2020-15250 (test-scope information disclosure via a
              world-readable temporary directory). -->
         <junit.version>4.13.2</junit.version>
+        <!-- Optional: only needed if a consumer registers MicrometerSendListener. The SDK's
+             own compile classpath has it, but it is not a transitive requirement. 1.13.x is
+             Java-8 compatible (class file 52). -->
+        <micrometer.version>1.13.0</micrometer.version>
     </properties>
 
     <dependencies>
@@ -52,6 +60,27 @@
             <groupId>org.apache.httpcomponents</groupId>
             <artifactId>httpclient</artifactId>
             <version>${httpclient.version}</version>
+        </dependency>
+
+        <!-- Real NIO non-blocking transport for the async send path (Java 8 compatible).
+             HttpAsyncClient 4.x is the async counterpart of the blocking client already
+             used here; it owns its own IO reactor and never blocks a caller thread. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpasyncclient</artifactId>
+            <version>${httpasyncclient.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpcore-nio</artifactId>
+            <version>${httpcore-nio.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+            <optional>true</optional>
         </dependency>
 
         <dependency>

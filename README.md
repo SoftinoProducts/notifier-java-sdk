@@ -1,6 +1,6 @@
 # Notifier Java SDK
 
-[![Java](https://img.shields.io/badge/Java-8-orange)](https://adoptium.net/)
+[![Java](https://img.shields.io/badge/Java-8%2B-orange)](https://adoptium.net/)
 
 A Java client for the **Notifier** multi-channel notification hub — built as a **drop-in replacement for
 [`kavenegar-java`](https://github.com/kavenegar/kavenegar-java)**. Kavenegar **template sends** map
@@ -26,7 +26,7 @@ Build from a GitHub tag:
 <dependency>
     <groupId>com.github.SoftinoProducts</groupId>
     <artifactId>notifier-java-sdk</artifactId>
-    <version>1.0.8</version>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -34,11 +34,12 @@ Gradle:
 
 ```groovy
 repositories { maven { url 'https://jitpack.io' } }
-dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.0.8' }
+dependencies { implementation 'com.github.SoftinoProducts:notifier-java-sdk:1.2.0' }
 ```
 
 Requires **Java 8+** and a Notifier API key (optionally a custom base URL — see
-[Configuration](#configuration)).
+[Configuration](#configuration)). The async transport uses Apache HttpAsyncClient 4.x;
+Micrometer is an *optional* dependency, needed only for `MicrometerSendListener`.
 
 ---
 
@@ -63,7 +64,261 @@ StatusResult s = api.status(r.getId());
 if (s.isDelivered()) { /* delivered */ }
 ```
 
-`NotifierApi` is `AutoCloseable` — call `close()` when done (releases the HTTP connection pool).
+`NotifierApi` is `AutoCloseable` — call `close()` when done. It drains accepted asynchronous
+sends for a configurable window, then releases the connection pool and all SDK threads.
+
+---
+
+## Non-blocking sends (1.2+)
+
+The original methods (`send`, `sendTemplateByName`, `verifyLookup`, ...) are **blocking**: they
+return after the hub answers. That is unchanged and still supported. Since 1.2 every send has
+two non-blocking equivalents:
+
+- `*Async(...)` returns a `CompletableFuture<...>` as soon as the send is queued.
+- `*AndForget(...)` returns `void` immediately and exposes no result.
+
+Neither does network I/O on the calling thread. A request-queue or sale endpoint can therefore
+send an OTP without paying a hub round trip (or a 10–30 second socket timeout when the hub is
+unhealthy).
+
+```java
+// Before: the caller's request thread waits for the hub.
+SendResult result = api.verifyLookup(phone, otp, "vibe:salerequest");
+String notificationId = result.getNotificationId();
+
+// After: the caller only enqueues; the hub round trip happens on an SDK daemon thread.
+String key = "otp:" + saleUuid;
+api.verifyLookupAndForget(phone, otp, "vibe:salerequest",
+        SendOptions.builder()
+                .idempotencyKey(key)
+                .traceId(saleUuid)
+                .priority(SendPriority.HIGH)     // OTP lane
+                .deadline(Duration.ofSeconds(5))
+                .build());
+```
+
+### API map
+
+Every blocking send shape has an async and a fire-and-forget form:
+
+| Blocking (unchanged) | Non-blocking future | Fire-and-forget |
+|---|---|---|
+| `send(type, recipient, Content/String[, SendOptions])` | `sendAsync(...)` | `sendAndForget(...)` |
+| `sendTemplate(type, recipient, templateId, ...)` | `sendTemplateAsync(...)` | `sendTemplateAndForget(...)` |
+| `sendTemplateByName(type, recipient, name, ...)` | `sendTemplateByNameAsync(...)` | `sendTemplateByNameAndForget(...)` |
+| `bulk(type, messages[, simulated])` | `bulkAsync(type, messages[, simulated[, SendOptions]])` | `bulkAndForget(...)` |
+| `status(id)` / `statusByProviderMessageId(id)` | `statusAsync(id)`, `statusByNotificationIdAsync(id)`, `statusByProviderMessageIdAsync(id)` | — |
+| `KavenegarApi.verifyLookup(receptor, token, template, ...)` | `verifyLookupAsync(...)` | `verifyLookupAndForget(...)` |
+| `KavenegarApi.send(sender, receptor, message)` | `sendAsync(...)` | `sendAndForget(...)` |
+| `KavenegarApi.sendArray(sender, receptors, messages)` | `sendArrayAsync(...)` | `sendArrayAndForget(...)` |
+| `sendToDevice(deviceId, subject, body)` | `sendToDeviceAsync(deviceId, subject, body[, SendOptions])` | `sendToDeviceAndForget(...)` |
+| `sendTemplateToDevice(deviceId, name, params...)` | `sendTemplateToDeviceAsync(deviceId, name[, SendOptions], params...)` | `sendTemplateToDeviceAndForget(...)` |
+
+The `verifyLookup` async forms also cover the named-parameter (`List<PairValue>`) and
+`simulated` overloads. Legacy overloads whose only extra arguments are Kavenegar's
+`MessageType`, date or `localId` already ignored those fields; their async equivalent is the
+canonical `sendAsync`/`sendArrayAsync` call.
+
+```java
+// Async: get the hub-accepted notification id without blocking the request thread.
+SendOptions options = SendOptions.builder()
+        .idempotencyKey("otp:" + saleUuid)
+        .traceId(saleUuid)
+        .priority(SendPriority.HIGH)                 // OTP lane, never behind bulk
+        .deadline(Duration.ofSeconds(5))             // total: queue + connect + read + retries
+        .build();
+
+CompletableFuture<com.softino.notifier.SendResult> future =
+        api.sendTemplateByNameAsync(ChannelType.SMS, phone, "verify", options, "123456");
+
+future.thenAccept(sent -> {
+            // Runs on an SDK thread: hand a DB write to your own executor, never block here.
+            myExecutor.execute(() -> repo.saveNotificationId(saleUuid, sent.getId()));
+        })
+        .exceptionally(error -> {
+            log.warn("otp enqueue failed key={} error={}", options.getIdempotencyKey(), error.toString());
+            return null;
+        });
+```
+
+### Migration steps (blocking → non-blocking)
+
+1. **Bump the dependency to `1.2.0`.** No source change is required for existing blocking
+   calls; they keep their signatures, timeouts and exception types.
+2. **Start with the latency-critical call site** (OTP on `/sale/request` or
+   `/register/request`). Replace `verifyLookup(...)` with `verifyLookupAndForget(...)` and pass
+   an idempotency key, trace id, `SendPriority.HIGH` and a deadline. The caller now only
+   enqueues.
+3. **Decide how to handle the result.** `*AndForget` returns `void` and throws only
+   `NotifierQueueFullException` (queue full, nothing sent, wait `retryAfterMillis`) and
+   `NotifierClosedException` (client closed). If you need `notificationId` in your own
+   transaction, use `*Async` and persist in a callback on your executor (example above); if you
+   only need correlation, keep the idempotency key.
+4. **Configure the client once.** Use `NotifierConfig` for queue sizes, deadline, retries,
+   close drain, metrics/listener and `hubSupportsIdempotencyKey(...)`. Leave the idempotency
+   flag `false` until the hub de-duplicates on `Idempotency-Key`; with it off the SDK never
+   retries ambiguous failures.
+5. **Observe failure instead of catching it.** Wire `api.stats()` or `SendListener` /
+   `MicrometerSendListener`; a dropped fire-and-forget send is counted, not silent. Poll with
+   `statusByNotificationIdAsync(...)` when you need delivery status.
+6. **Shut down cleanly.** Call `api.close()` (or enable `registerShutdownHook(true)`); it
+   rejects new sends, drains accepted work for `closeDrainMillis`, then fails the rest and
+   stops every SDK thread.
+7. **Roll out call site by call site.** Blocking and non-blocking methods can coexist; revert a
+   call site by switching it back without changing the client.
+
+A longer before/after guide is in [MIGRATION.md](MIGRATION.md); the complete change list is
+[CHANGELOG.md](CHANGELOG.md). Failure and performance evidence is in
+[FAILURE-TESTS.md](FAILURE-TESTS.md) and [PERFORMANCE.md](PERFORMANCE.md).
+
+> **What does *not* change:** delivery to the handset. Notifier, the provider and the operator
+> still decide when an SMS arrives. This release removes the caller-side wait and thread
+> occupancy; it does not shorten delivery time and cannot promise a "zero-latency" code.
+
+### Delivery guarantee matrix
+
+| Method | Caller blocks | Guarantee |
+|---|---|---|
+| `send*` (blocking, unchanged) | Until the hub replies (up to the socket timeout) | Hub acceptance; failures are thrown (`ApiException` / `HttpException`). |
+| `send*Async` | No | Future completes after hub acceptance; failures complete it exceptionally with a typed error. |
+| `send*AndForget` | No | At-most-once. If the hub fails, the message may be lost; it is counted in `notifier.send.dropped` / `stats().getDropped()`. |
+| `send*Async` + `idempotencyKey` | No | At-least-once from the SDK's point of view; duplicate-resistant in the hub **only once the hub honours `Idempotency-Key`** (see Hub coordination below). |
+
+### Priority lanes and backpressure
+
+Two independent lanes exist, each with its own bounded queue, dispatcher threads and HTTP
+concurrency quota:
+
+| Lane | Default use | Queue default | In-flight default |
+|---|---|---:|---:|
+| `HIGH` | OTP / transactional (`verifyLookup*` defaults here) | 2,000 | 8 |
+| `BULK` | everything else (`send*` defaults here) | 10,000 | 24 |
+
+Bulk traffic can never consume the HIGH lane's queue or permits. The SDK never batches a
+`HIGH` message.
+
+When a lane is full, the SDK refuses locally and immediately:
+
+- `send*AndForget` throws `NotifierQueueFullException` (with `retryAfterMillis`).
+- `send*Async` returns a future completed exceptionally with the same type.
+
+The caller thread is never blocked to make room, and a message is never dropped silently. The
+same applies after `close()`, which yields `NotifierClosedException`.
+
+### Deadlines, retries and idempotency
+
+A send has one **total deadline** covering queueing, connect, write, read and every retry. The
+default is 10 seconds; override per send with `SendOptions.deadline(...)`. An expired deadline yields
+`NotifierTimeoutException` (retryable), never a longer wait.
+
+Per-attempt defaults for async sends are connect 2s and read 5s (configurable on
+`NotifierConfig` and, per send, with `connectTimeout` / `readTimeout`). The read timeout is
+enforced on the NIO reactor's 100ms tick, so expect up to roughly that much overshoot.
+
+Retries use exponential backoff with full jitter on a scheduler; there is no `Thread.sleep`
+anywhere. The default cap is 2 retries (three attempts). Safety rules:
+
+| Failure | Retried by default? | Why |
+|---|---|---|
+| DNS failure, connection refused, connect timeout, TLS handshake | Yes | The request never reached the hub. |
+| HTTP 429 | Yes, honouring `Retry-After` | The hub rejected it without processing. |
+| Read timeout, connection reset after write, HTTP 5xx | **No** | The hub may have accepted the message. Enable only with idempotency support. |
+| HTTP 4xx (except 429) | No | Retrying the same payload fails the same way. |
+
+Set `hubSupportsIdempotencyKey(true)` only after the hub de-duplicates `POST /v1/notifications`
+on `Idempotency-Key`; then the SDK retries ambiguous failures with the **same** key on every
+attempt. When the caller does not supply a key, the SDK generates one and returns it from
+`SendResult.getIdempotencyKey()` so the result can be correlated with the hub's record.
+
+```java
+NotifierConfig config = NotifierConfig.builder("KEY")
+        .hubSupportsIdempotencyKey(true)   // only after the hub ships support
+        .maxRetries(2)
+        .build();
+```
+
+### Lifecycle and shutdown
+
+```java
+NotifierApi api = new NotifierApi(NotifierConfig.builder("KEY")
+        .closeDrainMillis(5_000)
+        .registerShutdownHook(true)   // optional
+        .build());
+
+try {
+    api.verifyLookupAndForget(phone, otp, "vibe:salerequest");
+} finally {
+    api.close();   // rejects new sends, drains accepted work, fails the rest, stops all threads
+}
+```
+
+`close()` is idempotent. Every accepted future is settled: it completes successfully, or fails
+with a typed exception. Work still queued or in flight when the drain window ends is failed
+with `NotifierClosedException`. No SDK thread or connection survives `close()`.
+
+All SDK threads are daemons named `notifier-sender-high-*`, `notifier-sender-bulk-*`,
+`notifier-reactor-*`, `notifier-retry-*`, or `notifier-deadline-*`. Their counts are fixed by
+configuration and do not grow with send rate. With the defaults the steady-state inventory is
+about seven: two bulk dispatchers, one HIGH dispatcher, two reactor threads (one worker plus
+Apache's dispatch thread), one retry scheduler and one deadline watchdog.
+
+### Observability
+
+Metrics (via the optional `MicrometerSendListener`, or a custom `SendListener`):
+
+| Metric | Type | Tags |
+|---|---|---|
+| `notifier.send.duration` | timer | `outcome`, `priority` |
+| `notifier.queue.depth` | gauge | `priority` |
+| `notifier.send.in_flight` | gauge | — |
+| `notifier.send.retries` | counter | `reason`, `priority` |
+| `notifier.send.rejected` | counter | `reason`, `priority` |
+| `notifier.send.dropped` | counter | `priority` |
+
+```java
+NotifierApi api = new NotifierApi(NotifierConfig.builder("KEY")
+        .sendListener(new MicrometerSendListener(registry, () -> apiStats.get().stats()))
+        .build());
+```
+
+The send counters exclude status reads (a status lookup uses the same engine but is not a
+send). Without Micrometer, implement `SendListener` directly or read `api.stats()`. Logging uses
+`java.util.logging` under the `com.softino.notifier` logger; it records identifiers, priority,
+outcome and duration only — never the body, OTP, token or full recipient number. `traceId`
+from `SendOptions` is copied to the `X-Trace-Id` header and into the SLF4J MDC around listener
+callbacks when SLF4J is present; the SDK's own log lines also carry it as an explicit field.
+
+### Hub coordination (required for the full P1 feature set)
+
+Three things cannot be delivered by the SDK alone:
+
+1. `Idempotency-Key` support on `POST /v1/notifications` (otherwise retries stay restricted to
+   failures before the request could reach the hub).
+2. An `X-Priority` header (sent as `high`/`bulk`) and a separate OTP lane inside the hub queue.
+3. A batch endpoint for `BULK` messages; `HIGH` messages are never batched.
+
+Until 1 and 2 are implemented hub-side, P0 (non-blocking caller path, bounded queues, deadlines,
+shutdown) works independently and is safe to deploy.
+
+### Configuration defaults
+
+| Setting | Default | Builder |
+|---|---:|---|
+| Async connect timeout | 2s | `asyncConnectTimeoutMillis` |
+| Async read timeout | 5s | `asyncReadTimeoutMillis` |
+| Total send deadline | 10s | `defaultDeadlineMillis` |
+| Retries | 2 | `maxRetries` |
+| Retry base / cap | 200ms / 2s | `retryBaseDelayMillis` / `retryMaxDelayMillis` |
+| 429 fallback when `Retry-After` is absent | 1s | `rateLimitedRetryAfterMillis` |
+| HIGH queue / threads / in-flight | 2,000 / 1 / 8 | `highPriorityQueueCapacity` / `highPrioritySenderThreads` / `highPriorityMaxInFlight` |
+| BULK queue / threads / in-flight | 10,000 / 2 / 24 | `bulkQueueCapacity` / `bulkPrioritySenderThreads` / `bulkMaxInFlight` |
+| NIO reactor worker threads / tick | 1 (plus 1 dispatch thread) / 100ms | `ioThreads` / `ioSelectIntervalMillis` |
+| Close drain | 5s | `closeDrainMillis` |
+| Blocking connect / read (legacy) | 10s / 30s | `blockingConnectTimeoutMillis` / `blockingReadTimeoutMillis` |
+
+The blocking defaults are unchanged from 1.1.x. A client built with the old constructors keeps
+its old blocking timeouts and gets the async defaults above.
 
 ---
 
@@ -361,11 +616,17 @@ of those as a recipient can never work.
 
 ## Error handling
 
-| Exception | Meaning |
-|---|---|
-| `NotifierException` | Base type for SDK errors. |
-| `ApiException` | Business/API error (e.g. duplicate idempotency key). Carries a `code`. |
-| `HttpException` | Transport/HTTP failure. Carries a `code`. |
+| Exception | Meaning | `isRetryable()` |
+|---|---|---|---|
+| `NotifierException` | Base type for SDK errors. | `false` |
+| `NotifierUnavailableException` | Hub unreachable or 5xx. | `true` |
+| `NotifierTimeoutException` | Total deadline or read timeout elapsed. | `true` |
+| `NotifierRateLimitedException` | HTTP 429; carries `retryAfterMillis`. | `true` |
+| `NotifierInvalidRequestException` | 4xx or locally invalid request. | `false` |
+| `NotifierQueueFullException` | Local queue full; carries `retryAfterMillis`. | `true` |
+| `NotifierClosedException` | Client closed. | `false` |
+| `ApiException` | Blocking path business/API error. Carries a `code`. | `false` |
+| `HttpException` | Blocking path transport/HTTP failure. Carries a `code`. | 408/429/5xx |
 
 ```java
 try {
@@ -590,16 +851,33 @@ Bulk sends (`api.bulk`) reject `route:` because a batch is scoped to one channel
 
 ## Configuration
 
+The short constructors are kept for compatibility:
+
 ```java
-// Default base URL: https://notifier-api.vibe.ir
 NotifierApi api = new NotifierApi("YOUR-API-KEY");
-
-// Custom base URL (e.g. staging)
 NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.internal");
-
-// Timeouts (connect, socket, ms) + max pooled connections per route
+// Blocking timeouts (connect, socket, ms) + max pooled connections per route
 NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.vibe.ir", 5_000, 15_000, 50);
 ```
+
+Use `NotifierConfig` to tune the async path, queues, retries, listener and shutdown:
+
+```java
+NotifierConfig config = NotifierConfig.builder("YOUR-API-KEY")
+        .baseUrl("https://notifier-api.vibe.ir")
+        .defaultDeadlineMillis(10_000)
+        .asyncConnectTimeoutMillis(2_000)
+        .asyncReadTimeoutMillis(5_000)
+        .highPriorityQueueCapacity(2_000)
+        .bulkQueueCapacity(10_000)
+        .maxRetries(2)
+        .closeDrainMillis(5_000)
+        .sendListener(listener)
+        .build();
+NotifierApi api = new NotifierApi(config);
+```
+
+See the defaults table in [Non-blocking sends](#non-blocking-sends-12).
 
 ---
 
@@ -608,7 +886,14 @@ NotifierApi api = new NotifierApi("YOUR-API-KEY", "https://notifier-api.vibe.ir"
 ```bash
 mvn test      # unit + embedded-server contract tests
 mvn package   # builds the jar
+
+# Local before/after benchmark (not part of `mvn test`; CI reports it as an artifact too)
+mvn -o -q org.codehaus.mojo:exec-maven-plugin:3.1.0:java \
+    -Dexec.mainClass=com.softino.notifier.AsyncBenchmark -Dexec.classpathScope=test
 ```
+
+The non-blocking demo lives in [`demo/`](demo) (`./demo/run.sh`). Failure and performance
+reports are in [FAILURE-TESTS.md](FAILURE-TESTS.md) and [PERFORMANCE.md](PERFORMANCE.md).
 
 `LiveApiIT` is a live integration test (named `*IT`, excluded from `mvn test`):
 
@@ -616,9 +901,9 @@ mvn package   # builds the jar
 NOTIFIER_API_KEY="..." NOTIFIER_BASE_URL="https://notifier-api.vibe.ir" mvn -Dtest=LiveApiIT test
 ```
 
-JitPack builds from a GitHub tag. Push `v1.1.0` (or newer) and it serves
+JitPack builds from a GitHub tag. Push `v1.2.0` (or newer) and it serves
 `com.github.SoftinoProducts:notifier-java-sdk:<tag>`, for example
-`com.github.SoftinoProducts:notifier-java-sdk:v1.1.0`. Release tags are `v`-prefixed because
+`com.github.SoftinoProducts:notifier-java-sdk:v1.2.0`. Release tags are `v`-prefixed because
 the Maven Central publish workflow keys on `v*`; the artifact version comes from `pom.xml`.
 
 ---

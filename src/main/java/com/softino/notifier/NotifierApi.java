@@ -11,7 +11,11 @@ import com.softino.notifier.channel.SlackChannelApi;
 import com.softino.notifier.channel.TelegramChannelApi;
 import com.softino.notifier.exception.ApiException;
 import com.softino.notifier.exception.HttpException;
+import com.softino.notifier.exception.NotifierClosedException;
 import com.softino.notifier.exception.NotifierException;
+import com.softino.notifier.exception.NotifierQueueFullException;
+import com.softino.notifier.internal.AsyncSendEngine;
+import com.softino.notifier.internal.RequestSpec;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpDelete;
@@ -33,11 +37,15 @@ import java.net.URISyntaxException;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Channel-agnostic client for the Notifier notification hub.
@@ -60,6 +68,25 @@ import java.util.Objects;
  *
  * <p>For a Kavenegar-java drop-in facade, see
  * {@link com.softino.notifier.kavenegar.KavenegarApi}.</p>
+ *
+ * <h2>Blocking and non-blocking sends</h2>
+ *
+ * <p>The original {@code send*}/{@code status} methods are blocking and unchanged: they return
+ * after the hub answers. The {@code send*Async} methods return a {@link java.util.concurrent.CompletableFuture}
+ * as soon as the task is queued; {@code send*AndForget} returns immediately and does not expose
+ * a result. Neither variant does network I/O on the calling thread, so a slow or unavailable
+ * hub cannot hold an application request thread.</p>
+ *
+ * <p>Async callbacks and listener invocations run on SDK-owned daemon threads. Do not block in
+ * {@code thenApply}/{@code thenAccept}: a dependent stage runs on the same reactor thread that
+ * completed the send.</p>
+ *
+ * <p><b>What this does not change:</b> delivery to the handset is still asynchronous and
+ * provider-dependent. The SDK removes waiting and thread occupancy on the caller side, not the
+ * time it takes a code to reach a phone.</p>
+ *
+ * <p>Requires Java 8 or newer. The async transport is Apache HttpAsyncClient 4.x (NIO); no
+ * {@code ForkJoinPool.commonPool} and no thread-per-message path is used.</p>
  */
 public class NotifierApi implements AutoCloseable {
 
@@ -67,18 +94,34 @@ public class NotifierApi implements AutoCloseable {
 
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
-    private static final int DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-    private static final int DEFAULT_SOCKET_TIMEOUT_MS = 30_000;
-    private static final int DEFAULT_CONN_REQUEST_TIMEOUT_MS = 5_000;
-    private static final int DEFAULT_MAX_CONNECTIONS = 20;
+    // Legacy blocking defaults. Their values are unchanged from 1.1.x; the async path has its
+    // own, user-facing defaults on NotifierConfig.
+    private static final int DEFAULT_CONNECT_TIMEOUT_MS = NotifierConfig.DEFAULT_BLOCKING_CONNECT_TIMEOUT_MS;
+    private static final int DEFAULT_SOCKET_TIMEOUT_MS = NotifierConfig.DEFAULT_BLOCKING_READ_TIMEOUT_MS;
+    private static final int DEFAULT_MAX_CONNECTIONS = NotifierConfig.DEFAULT_MAX_CONNECTIONS;
 
+    private final NotifierConfig config;
     private final String apiKey;
     private final String baseUrl;
     private final CloseableHttpClient httpClient;
 
+    /**
+     * Created on the first async/forget call so a blocking-only consumer never pays for the
+     * NIO reactor or dispatcher threads. Created lock-free; a losing racer is closed.
+     */
+    private final AtomicReference<AsyncSendEngine> asyncEngine = new AtomicReference<AsyncSendEngine>();
+
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private final Thread shutdownHook;
+
     /** Returns the canonical base URL this client targets. */
     public String getBaseUrl() {
         return baseUrl;
+    }
+
+    /** The immutable configuration this client was built with. */
+    public NotifierConfig getConfig() {
+        return config;
     }
 
     /**
@@ -101,12 +144,14 @@ public class NotifierApi implements AutoCloseable {
     }
 
     /**
-     * Constructs a client with full control over the underlying HTTP transport.
+     * Constructs a client with full control over the legacy blocking transport. Async sends
+     * still use the async defaults (connect 2s, read 5s, deadline 10s); use
+     * {@link #NotifierApi(NotifierConfig)} to tune both.
      *
      * @param apiKey               the tenant's X-API-Key
      * @param baseUrl              base URL without a trailing slash
-     * @param connectTimeoutMs     TCP connect timeout
-     * @param socketTimeoutMs      read/write socket timeout
+     * @param connectTimeoutMs     TCP connect timeout of the blocking transport
+     * @param socketTimeoutMs      read/write socket timeout of the blocking transport
      * @param maxConnectionsPerRoute max pooled connections per route
      */
     public NotifierApi(String apiKey, String baseUrl, int connectTimeoutMs, int socketTimeoutMs,
@@ -124,20 +169,29 @@ public class NotifierApi implements AutoCloseable {
      */
     public NotifierApi(String apiKey, String baseUrl, int connectTimeoutMs, int socketTimeoutMs,
                        int maxConnectionsPerRoute, boolean allowInsecureBaseUrl) {
-        this.apiKey = Objects.requireNonNull(apiKey, "apiKey");
-        String base = Objects.requireNonNull(baseUrl, "baseUrl");
-        base = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
-        requireSecureBaseUrl(base, allowInsecureBaseUrl);
+        this(NotifierConfig.legacy(apiKey, baseUrl, connectTimeoutMs, socketTimeoutMs,
+                maxConnectionsPerRoute, allowInsecureBaseUrl).build());
+    }
+
+    /**
+     * Constructs a client from full configuration, covering the blocking and non-blocking
+     * paths plus queue, retry, deadline, listener and shutdown settings.
+     */
+    public NotifierApi(NotifierConfig config) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.apiKey = Objects.requireNonNull(config.getApiKey(), "apiKey");
+        String base = config.getBaseUrl();
+        requireSecureBaseUrl(base, config.isAllowInsecureBaseUrl());
         this.baseUrl = base;
 
         PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
-        cm.setMaxTotal(maxConnectionsPerRoute);
-        cm.setDefaultMaxPerRoute(maxConnectionsPerRoute);
+        cm.setMaxTotal(config.getMaxConnections());
+        cm.setDefaultMaxPerRoute(config.getMaxConnections());
 
         RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectTimeout(connectTimeoutMs)
-                .setSocketTimeout(socketTimeoutMs)
-                .setConnectionRequestTimeout(DEFAULT_CONN_REQUEST_TIMEOUT_MS)
+                .setConnectTimeout(config.getBlockingConnectTimeoutMs())
+                .setSocketTimeout(config.getBlockingReadTimeoutMs())
+                .setConnectionRequestTimeout(config.getConnectionRequestTimeoutMs())
                 .build();
 
         this.httpClient = HttpClientBuilder.create()
@@ -145,16 +199,55 @@ public class NotifierApi implements AutoCloseable {
                 .setDefaultRequestConfig(requestConfig)
                 .disableAutomaticRetries() // shipping a notification twice is worse than not at all
                 .build();
+
+        Thread hook = null;
+        if (config.isRegisterShutdownHook()) {
+            hook = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    NotifierApi.this.close();
+                }
+            }, "notifier-shutdown-hook");
+            try {
+                Runtime.getRuntime().addShutdownHook(hook);
+            } catch (IllegalStateException alreadyShuttingDown) {
+                hook = null;
+            }
+        }
+        this.shutdownHook = hook;
     }
 
-    /** Releases the underlying connection pool. Call when the client is no longer needed. */
+    /**
+     * Releases the async engine (draining accepted sends for the configured window) and the
+     * blocking connection pool. Idempotent; a closed client rejects new sends with
+     * {@link NotifierClosedException}.
+     */
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        AsyncSendEngine engine = asyncEngine.get();
+        if (engine != null) {
+            engine.close();
+        }
         try {
             httpClient.close();
         } catch (IOException ignored) {
             // nothing meaningful to do on close
         }
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // already shutting down; the hook is either running or irrelevant
+            }
+        }
+    }
+
+    /** True once {@link #close()} has been called. */
+    public boolean isClosed() {
+        return closed.get();
     }
 
     // ------------------------------------------------------------------
@@ -283,6 +376,541 @@ public class NotifierApi implements AutoCloseable {
         if (o.getMetadata() != null) b.metadata(o.getMetadata());
         if (o.getLocale() != null) b.locale(o.getLocale());
         if (o.isSimulated()) b.simulated(true);
+        // Async-only fields. The blocking path ignores them, but template overloads must not
+        // drop them when they are used with the async entry points.
+        if (o.getDeadline() != null) b.deadline(o.getDeadline());
+        if (o.getConnectTimeout() != null) b.connectTimeout(o.getConnectTimeout());
+        if (o.getReadTimeout() != null) b.readTimeout(o.getReadTimeout());
+        if (o.getTraceId() != null) b.traceId(o.getTraceId());
+        if (o.getPriority() != null) b.priority(o.getPriority());
+        if (o.getMaxRetries() != null) b.maxRetries(o.getMaxRetries());
+        if (o.isFireAndForget()) b.fireAndForget(true);
+    }
+
+    // ------------------------------------------------------------------
+    // Non-blocking send API
+    //
+    // The calling thread only builds a small task object and offers it to a bounded lane;
+    // request encoding, connection setup, TLS, writes, reads, retries and response parsing all
+    // happen on SDK-owned daemon threads. *Async returns a future that is completed on an SDK
+    // thread; *AndForget returns immediately and throws only the two immediate local failures:
+    // NotifierQueueFullException and NotifierClosedException.
+    // ------------------------------------------------------------------
+
+    /** Non-blocking {@link #send(ChannelType, String, Content)}. */
+    public CompletableFuture<SendResult> sendAsync(ChannelType type, String recipient, Content content) {
+        return sendAsync(type, recipient, content, SendOptions.none());
+    }
+
+    /** Non-blocking send with options; returns after the task is queued, not after the hub replies. */
+    public CompletableFuture<SendResult> sendAsync(ChannelType type, String recipient, Content content,
+                                                   SendOptions opts) {
+        SendOptions o = opts == null ? SendOptions.none() : opts;
+        return asyncSend(type, recipient, content, o, SendPriority.BULK);
+    }
+
+    /** Non-blocking {@link #send(ChannelType, String, String)}. */
+    public CompletableFuture<SendResult> sendAsync(ChannelType type, String recipient, String body) {
+        return sendAsync(type, recipient, Content.of(body), SendOptions.none());
+    }
+
+    /** Non-blocking plain-body send with options. */
+    public CompletableFuture<SendResult> sendAsync(ChannelType type, String recipient, String body,
+                                                   SendOptions opts) {
+        return sendAsync(type, recipient, Content.of(body), opts);
+    }
+
+    /**
+     * Fire-and-forget send: returns as soon as the task is queued and never throws a network
+     * failure. Failure is visible through {@link #stats()} ({@code dropped}) and the
+     * {@link SendListener} passed to {@link NotifierConfig}.
+     *
+     * @throws NotifierQueueFullException when the lane's bounded queue is full (nothing is sent)
+     * @throws NotifierClosedException    when the client is closed
+     */
+    public void sendAndForget(ChannelType type, String recipient, Content content)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendAndForget(type, recipient, content, SendOptions.none());
+    }
+
+    /** Fire-and-forget send with options. */
+    public void sendAndForget(ChannelType type, String recipient, Content content, SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions o = opts == null ? SendOptions.none() : opts;
+        asyncSendForget(type, recipient, content, o, SendPriority.BULK);
+    }
+
+    /** Fire-and-forget plain-body send. */
+    public void sendAndForget(ChannelType type, String recipient, String body)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendAndForget(type, recipient, Content.of(body), SendOptions.none());
+    }
+
+    /** Fire-and-forget plain-body send with options. */
+    public void sendAndForget(ChannelType type, String recipient, String body, SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendAndForget(type, recipient, Content.of(body), opts);
+    }
+
+    /** Non-blocking template-by-id send (values by name). */
+    public CompletableFuture<SendResult> sendTemplateAsync(ChannelType type, String recipient,
+                                                           String templateId, Map<String, Object> templateVars) {
+        return sendTemplateAsync(type, recipient, templateId, templateVars, SendOptions.none());
+    }
+
+    /** Non-blocking template-by-id send with options. */
+    public CompletableFuture<SendResult> sendTemplateAsync(ChannelType type, String recipient,
+                                                           String templateId, Map<String, Object> templateVars,
+                                                           SendOptions opts) {
+        SendOptions.Builder b = SendOptions.builder().templateId(templateId).templateVars(templateVars);
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        return sendAsync(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Non-blocking template-by-id send (values positionally). */
+    public CompletableFuture<SendResult> sendTemplateAsync(ChannelType type, String recipient,
+                                                           String templateId, Object... params) {
+        return sendTemplateAsync(type, recipient, templateId, SendOptions.none(), params);
+    }
+
+    /** Non-blocking template-by-id send with options (values positionally). */
+    public CompletableFuture<SendResult> sendTemplateAsync(ChannelType type, String recipient,
+                                                           String templateId, SendOptions opts,
+                                                           Object... params) {
+        SendOptions.Builder b = SendOptions.builder().templateId(templateId).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        return sendAsync(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Fire-and-forget template-by-id send (values by name). */
+    public void sendTemplateAndForget(ChannelType type, String recipient, String templateId,
+                                      Map<String, Object> templateVars)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendTemplateAndForget(type, recipient, templateId, templateVars, SendOptions.none());
+    }
+
+    /** Fire-and-forget template-by-id send with options (values by name). */
+    public void sendTemplateAndForget(ChannelType type, String recipient, String templateId,
+                                      Map<String, Object> templateVars, SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions.Builder b = SendOptions.builder().templateId(templateId).templateVars(templateVars);
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        sendAndForget(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Fire-and-forget template-by-id send (values positionally). */
+    public void sendTemplateAndForget(ChannelType type, String recipient, String templateId,
+                                      Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendTemplateAndForget(type, recipient, templateId, SendOptions.none(), params);
+    }
+
+    /** Fire-and-forget template-by-id send with options (values positionally). */
+    public void sendTemplateAndForget(ChannelType type, String recipient, String templateId,
+                                      SendOptions opts, Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions.Builder b = SendOptions.builder().templateId(templateId).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        sendAndForget(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Non-blocking template-by-name send (values by name). */
+    public CompletableFuture<SendResult> sendTemplateByNameAsync(ChannelType type, String recipient,
+                                                                 String templateName,
+                                                                 Map<String, Object> templateVars) {
+        return sendTemplateByNameAsync(type, recipient, templateName, templateVars, SendOptions.none());
+    }
+
+    /** Non-blocking template-by-name send with options (values by name). */
+    public CompletableFuture<SendResult> sendTemplateByNameAsync(ChannelType type, String recipient,
+                                                                 String templateName,
+                                                                 Map<String, Object> templateVars,
+                                                                 SendOptions opts) {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateVars(templateVars);
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        return sendAsync(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Non-blocking template-by-name send (values positionally). */
+    public CompletableFuture<SendResult> sendTemplateByNameAsync(ChannelType type, String recipient,
+                                                                 String templateName, Object... params) {
+        return sendTemplateByNameAsync(type, recipient, templateName, SendOptions.none(), params);
+    }
+
+    /** Non-blocking template-by-name send with options (values positionally). */
+    public CompletableFuture<SendResult> sendTemplateByNameAsync(ChannelType type, String recipient,
+                                                                 String templateName, SendOptions opts,
+                                                                 Object... params) {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        return sendAsync(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Fire-and-forget template-by-name send (values by name). */
+    public void sendTemplateByNameAndForget(ChannelType type, String recipient, String templateName,
+                                            Map<String, Object> templateVars)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendTemplateByNameAndForget(type, recipient, templateName, templateVars, SendOptions.none());
+    }
+
+    /** Fire-and-forget template-by-name send with options (values by name). */
+    public void sendTemplateByNameAndForget(ChannelType type, String recipient, String templateName,
+                                            Map<String, Object> templateVars, SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateVars(templateVars);
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        sendAndForget(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Fire-and-forget template-by-name send (values positionally). */
+    public void sendTemplateByNameAndForget(ChannelType type, String recipient, String templateName,
+                                            Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendTemplateByNameAndForget(type, recipient, templateName, SendOptions.none(), params);
+    }
+
+    /** Fire-and-forget template-by-name send with options (values positionally). */
+    public void sendTemplateByNameAndForget(ChannelType type, String recipient, String templateName,
+                                            SendOptions opts, Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        sendAndForget(type, recipient, Content.of(""), b.build());
+    }
+
+    /** Non-blocking bulk send (future completes after the hub accepts the batch). */
+    public CompletableFuture<BulkResult> bulkAsync(ChannelType type, List<RecipientMessage> messages) {
+        return bulkAsync(type, messages, false);
+    }
+
+    /** Non-blocking bulk send, optionally rehearsed. */
+    public CompletableFuture<BulkResult> bulkAsync(final ChannelType type,
+                                                   final List<RecipientMessage> messages,
+                                                   final boolean simulated) {
+        return bulkAsync(type, messages, simulated, SendOptions.none());
+    }
+
+    /** Non-blocking bulk send with options (deadline, trace id, priority, retry cap). */
+    public CompletableFuture<BulkResult> bulkAsync(final ChannelType type,
+                                                   final List<RecipientMessage> messages,
+                                                   final boolean simulated, SendOptions opts) {
+        final SendOptions effective = opts == null ? SendOptions.none() : opts;
+        try {
+            return asyncEngine().submit(new RequestSpec.Factory<BulkResult>() {
+                @Override
+                public RequestSpec<BulkResult> create(String idempotencyKey) {
+                    return RequestSpec.<BulkResult>builder("POST", "/v1/notifications/bulk", BULK_PARSER)
+                            .body(buildBulkBody(type, messages, simulated).toString())
+                            .idempotencyKey(idempotencyKey)
+                            .channelType(type == null ? null : type.getValue())
+                            .build();
+                }
+            }, effective, SendPriority.BULK, true, true);
+        } catch (NotifierException e) {
+            return failedFuture(e);
+        }
+    }
+
+    /** Fire-and-forget bulk send. */
+    public void bulkAndForget(ChannelType type, List<RecipientMessage> messages)
+            throws NotifierQueueFullException, NotifierClosedException {
+        bulkAndForget(type, messages, false);
+    }
+
+    /** Fire-and-forget bulk send, optionally rehearsed. */
+    public void bulkAndForget(final ChannelType type, final List<RecipientMessage> messages,
+                              final boolean simulated)
+            throws NotifierQueueFullException, NotifierClosedException {
+        bulkAndForget(type, messages, simulated, SendOptions.none());
+    }
+
+    /** Fire-and-forget bulk send with options. */
+    public void bulkAndForget(final ChannelType type, final List<RecipientMessage> messages,
+                              final boolean simulated, SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        final SendOptions effective = opts == null ? SendOptions.none() : opts;
+        asyncEngine().submitAndForget(new RequestSpec.Factory<BulkResult>() {
+            @Override
+            public RequestSpec<BulkResult> create(String idempotencyKey) {
+                return RequestSpec.<BulkResult>builder("POST", "/v1/notifications/bulk", BULK_PARSER)
+                        .body(buildBulkBody(type, messages, simulated).toString())
+                        .idempotencyKey(idempotencyKey)
+                        .channelType(type == null ? null : type.getValue())
+                        .build();
+            }
+        }, effective, SendPriority.BULK, true);
+    }
+
+    /** Non-blocking status lookup by Notifier UUID. */
+    public CompletableFuture<StatusResult> statusAsync(String notificationId) {
+        Objects.requireNonNull(notificationId, "notificationId");
+        return asyncStatus("/v1/notifications/" + encodePathSegment(notificationId, "notificationId"));
+    }
+
+    /** Explicit alias for {@link #statusAsync(String)}: status by Notifier UUID. */
+    public CompletableFuture<StatusResult> statusByNotificationIdAsync(String notificationId) {
+        return statusAsync(notificationId);
+    }
+
+    /** Non-blocking status lookup by provider message id. */
+    public CompletableFuture<StatusResult> statusByProviderMessageIdAsync(String providerMessageId) {
+        Objects.requireNonNull(providerMessageId, "providerMessageId");
+        return asyncStatus("/v1/notifications/by-provider-message-id/"
+                + encodePathSegment(providerMessageId, "providerMessageId"));
+    }
+
+    /** Non-blocking Web Push send to a registered device. */
+    public CompletableFuture<SendResult> sendToDeviceAsync(String deviceId, String subject, String body) {
+        return sendToDeviceAsync(deviceId, subject, body, SendOptions.none());
+    }
+
+    /** Non-blocking Web Push send to a registered device with options. */
+    public CompletableFuture<SendResult> sendToDeviceAsync(final String deviceId, String subject, String body,
+                                                           SendOptions opts) {
+        SendOptions o = opts == null ? SendOptions.none() : opts;
+        return asyncSend(ChannelType.WEBPUSH, new RecipientProvider() {
+            @Override
+            public String get() {
+                return deviceRecipient(deviceId);
+            }
+        }, new Content(subject, body), o, SendPriority.BULK);
+    }
+
+    /** Non-blocking Web Push send to a registered device without a subject. */
+    public CompletableFuture<SendResult> sendToDeviceAsync(String deviceId, String body) {
+        return sendToDeviceAsync(deviceId, null, body);
+    }
+
+    /** Non-blocking Web Push send to a registered device without a subject, with options. */
+    public CompletableFuture<SendResult> sendToDeviceAsync(String deviceId, String body, SendOptions opts) {
+        return sendToDeviceAsync(deviceId, null, body, opts);
+    }
+
+    /** Non-blocking templated Web Push send to a registered device. */
+    public CompletableFuture<SendResult> sendTemplateToDeviceAsync(String deviceId, String templateName,
+                                                                   Object... params) {
+        return sendTemplateToDeviceAsync(deviceId, templateName, SendOptions.none(), params);
+    }
+
+    /** Non-blocking templated Web Push send to a registered device with options. */
+    public CompletableFuture<SendResult> sendTemplateToDeviceAsync(final String deviceId,
+                                                                   final String templateName,
+                                                                   SendOptions opts, Object... params) {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        return asyncSend(ChannelType.WEBPUSH, new RecipientProvider() {
+            @Override
+            public String get() {
+                return deviceRecipient(deviceId);
+            }
+        }, Content.of(""), b.build(), SendPriority.BULK);
+    }
+
+    /** Fire-and-forget Web Push send to a registered device. */
+    public void sendToDeviceAndForget(final String deviceId, final String subject, final String body)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendToDeviceAndForget(deviceId, subject, body, SendOptions.none());
+    }
+
+    /** Fire-and-forget Web Push send to a registered device with options. */
+    public void sendToDeviceAndForget(final String deviceId, final String subject, final String body,
+                                      SendOptions opts)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions o = opts == null ? SendOptions.none() : opts;
+        asyncSendForget(ChannelType.WEBPUSH, new RecipientProvider() {
+            @Override
+            public String get() {
+                return deviceRecipient(deviceId);
+            }
+        }, new Content(subject, body), o, SendPriority.BULK);
+    }
+
+    /** Fire-and-forget Web Push send to a registered device without a subject. */
+    public void sendToDeviceAndForget(String deviceId, String body)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendToDeviceAndForget(deviceId, null, body);
+    }
+
+    /** Fire-and-forget templated Web Push send to a registered device. */
+    public void sendTemplateToDeviceAndForget(String deviceId, String templateName, Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        sendTemplateToDeviceAndForget(deviceId, templateName, SendOptions.none(), params);
+    }
+
+    /** Fire-and-forget templated Web Push send to a registered device with options. */
+    public void sendTemplateToDeviceAndForget(final String deviceId, final String templateName,
+                                              SendOptions opts, Object... params)
+            throws NotifierQueueFullException, NotifierClosedException {
+        SendOptions.Builder b = SendOptions.builder().templateName(templateName).templateParams(toList(params));
+        mergeOptions(b, opts == null ? SendOptions.none() : opts);
+        asyncSendForget(ChannelType.WEBPUSH, new RecipientProvider() {
+            @Override
+            public String get() {
+                return deviceRecipient(deviceId);
+            }
+        }, Content.of(""), b.build(), SendPriority.BULK);
+    }
+
+    private CompletableFuture<StatusResult> asyncStatus(String path) {
+        try {
+            return asyncEngine().submit(new RequestSpec.Factory<StatusResult>() {
+                @Override
+                public RequestSpec<StatusResult> create(String ignored) {
+                    return RequestSpec.<StatusResult>builder("GET", path, STATUS_PARSER).build();
+                }
+            }, SendOptions.none(), SendPriority.BULK, false, false);
+        } catch (NotifierException e) {
+            return failedFuture(e);
+        }
+    }
+
+    /**
+     * Counters and gauges for the async send path. Safe to call at any time; a client that has
+     * never sent asynchronously reports zeros.
+     */
+    public NotifierStats stats() {
+        AsyncSendEngine engine = asyncEngine.get();
+        return engine == null
+                ? new NotifierStats(0, 0, 0, 0, 0, 0, 0, 0, 0)
+                : engine.stats();
+    }
+
+    /**
+     * Waits until every accepted async send has reached a terminal outcome, or the timeout
+     * expires. Intended for tests, demos and orderly application shutdown; it parks the
+     * calling thread deliberately and is never used on a send path.
+     */
+    public boolean awaitIdle(Duration timeout) {
+        AsyncSendEngine engine = asyncEngine.get();
+        return engine == null || engine.awaitIdle(timeout);
+    }
+
+    private AsyncSendEngine asyncEngine() {
+        AsyncSendEngine existing = asyncEngine.get();
+        if (existing != null) {
+            return existing;
+        }
+        if (closed.get()) {
+            throw new NotifierClosedException("notifier client is closed");
+        }
+        AsyncSendEngine created = new AsyncSendEngine(config);
+        if (closed.get()) {
+            created.close();
+            throw new NotifierClosedException("notifier client is closed");
+        }
+        if (!asyncEngine.compareAndSet(null, created)) {
+            created.close();
+        }
+        existing = asyncEngine.get();
+        if (closed.get()) {
+            AsyncSendEngine engine = asyncEngine.get();
+            if (engine != null) {
+                engine.close();
+            }
+            throw new NotifierClosedException("notifier client is closed");
+        }
+        return existing;
+    }
+
+    /** Resolves the recipient on an SDK dispatcher thread, not on the caller. */
+    private interface RecipientProvider {
+        String get();
+    }
+
+    private CompletableFuture<SendResult> asyncSend(ChannelType type, String recipient, Content content,
+                                                    SendOptions options, SendPriority priority) {
+        return asyncSend(type, constant(recipient), content, options, priority);
+    }
+
+    private CompletableFuture<SendResult> asyncSend(ChannelType type, RecipientProvider recipient,
+                                                    Content content, SendOptions options,
+                                                    SendPriority priority) {
+        try {
+            return asyncEngine().submit(sendFactory(type, recipient, content, options), options, priority,
+                    true, true);
+        } catch (NotifierException e) {
+            return failedFuture(e);
+        }
+    }
+
+    private void asyncSendForget(ChannelType type, String recipient, Content content,
+                                 SendOptions options, SendPriority priority) {
+        asyncSendForget(type, constant(recipient), content, options, priority);
+    }
+
+    private void asyncSendForget(ChannelType type, RecipientProvider recipient, Content content,
+                                 SendOptions options, SendPriority priority) {
+        asyncEngine().submitAndForget(sendFactory(type, recipient, content, options), options, priority, true);
+    }
+
+    private static RecipientProvider constant(final String recipient) {
+        return new RecipientProvider() {
+            @Override
+            public String get() {
+                return recipient;
+            }
+        };
+    }
+
+    private RequestSpec.Factory<SendResult> sendFactory(final ChannelType type,
+                                                        final RecipientProvider recipient,
+                                                        final Content content,
+                                                        final SendOptions options) {
+        return new RequestSpec.Factory<SendResult>() {
+            @Override
+            public RequestSpec<SendResult> create(String idempotencyKey) {
+                // A provider that validates (Web Push device ids) runs here, on a dispatcher:
+                // an invalid value becomes a typed failure/dropped send, never a caller throw.
+                JsonObject body = buildSendBody(type, recipient.get(), content,
+                        options.withIdempotencyKey(idempotencyKey));
+                return RequestSpec.<SendResult>builder("POST", "/v1/notifications", SEND_PARSER)
+                        .body(body.toString())
+                        .idempotencyKey(idempotencyKey)
+                        .channelType(type == null ? null : type.getValue())
+                        .build();
+            }
+        };
+    }
+
+    private static final RequestSpec.Parser<SendResult> SEND_PARSER =
+            new RequestSpec.Parser<SendResult>() {
+                @Override
+                public SendResult parse(JsonObject body, String idempotencyKey) {
+                    if (body == null) {
+                        throw new NotifierException("hub returned an empty send response");
+                    }
+                    return SendResult.from(body).withIdempotencyKey(idempotencyKey);
+                }
+            };
+
+    private static final RequestSpec.Parser<StatusResult> STATUS_PARSER =
+            new RequestSpec.Parser<StatusResult>() {
+                @Override
+                public StatusResult parse(JsonObject body, String ignored) {
+                    if (body == null) {
+                        throw new NotifierException("hub returned an empty status response");
+                    }
+                    return StatusResult.from(body);
+                }
+            };
+
+    private static final RequestSpec.Parser<BulkResult> BULK_PARSER =
+            new RequestSpec.Parser<BulkResult>() {
+                @Override
+                public BulkResult parse(JsonObject body, String ignored) {
+                    if (body == null) {
+                        throw new NotifierException("hub returned an empty bulk response");
+                    }
+                    String batchId = body.has("batch_id") ? body.get("batch_id").getAsString() : null;
+                    int count = body.has("count") ? body.get("count").getAsInt() : 0;
+                    return new BulkResult(batchId, count);
+                }
+            };
+
+    private static <T> CompletableFuture<T> failedFuture(Throwable error) {
+        CompletableFuture<T> future = new CompletableFuture<T>();
+        future.completeExceptionally(error);
+        return future;
     }
 
     // ------------------------------------------------------------------
@@ -300,6 +928,14 @@ public class NotifierApi implements AutoCloseable {
      * overrides it with {@link RecipientMessage.Builder#simulated(boolean)}.
      */
     public BulkResult bulk(ChannelType type, List<RecipientMessage> messages, boolean simulated) {
+        JsonObject resp = postJson("/v1/notifications/bulk", buildBulkBody(type, messages, simulated));
+        String batchId = resp.has("batch_id") ? resp.get("batch_id").getAsString() : null;
+        int count = resp.has("count") ? resp.get("count").getAsInt() : 0;
+        return new BulkResult(batchId, count);
+    }
+
+    /** Builds the bulk request body once, for both the blocking and the async bulk paths. */
+    private JsonObject buildBulkBody(ChannelType type, List<RecipientMessage> messages, boolean simulated) {
         JsonObject body = new JsonObject();
         body.addProperty("channel_type", type.getValue());
         if (simulated) body.addProperty("simulated", true);
@@ -338,11 +974,7 @@ public class NotifierApi implements AutoCloseable {
             arr.add(jo);
         }
         body.add("messages", arr);
-
-        JsonObject resp = postJson("/v1/notifications/bulk", body);
-        String batchId = resp.has("batch_id") ? resp.get("batch_id").getAsString() : null;
-        int count = resp.has("count") ? resp.get("count").getAsInt() : 0;
-        return new BulkResult(batchId, count);
+        return body;
     }
 
     // ------------------------------------------------------------------
@@ -838,7 +1470,7 @@ public class NotifierApi implements AutoCloseable {
             // A 204 carries no entity at all, and EntityUtils refuses null, so read defensively.
             String raw = response.getEntity() == null ? null
                     : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
-            JsonElement parsed = raw == null || raw.isEmpty() ? null : GSON.fromJson(raw, JsonObject.class);
+            JsonElement parsed = parseJsonSafely(raw);
 
             if (code < 200 || code >= 300) {
                 throw toException(code, parsed);
@@ -847,7 +1479,7 @@ public class NotifierApi implements AutoCloseable {
                 return null;
             }
             if (!parsed.isJsonObject()) {
-                throw new NotifierException("Unexpected response from Notifier API: " + raw);
+                throw new NotifierException("Unexpected response from Notifier API (HTTP " + code + ")");
             }
             return parsed.getAsJsonObject();
         } catch (IOException e) {
@@ -859,17 +1491,32 @@ public class NotifierApi implements AutoCloseable {
         try (CloseableHttpResponse response = httpClient.execute(request)) {
             int code = response.getStatusLine().getStatusCode();
             String raw = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
-            JsonElement parsed = raw == null || raw.isEmpty() ? null : GSON.fromJson(raw, JsonObject.class);
+            JsonElement parsed = parseJsonSafely(raw);
 
             if (code < 200 || code >= 300) {
                 throw toException(code, parsed);
             }
             if (parsed == null || !parsed.isJsonObject()) {
-                throw new NotifierException("Unexpected response from Notifier API: " + raw);
+                throw new NotifierException("Unexpected response from Notifier API (HTTP " + code + ")");
             }
             return parsed.getAsJsonObject();
         } catch (IOException e) {
             throw new HttpException("HTTP request failed: " + e.getMessage(), 0);
+        }
+    }
+
+    /**
+     * Parses a response body without ever putting its bytes into an exception message: a
+     * notification response can echo rendered content, including an OTP.
+     */
+    private static JsonElement parseJsonSafely(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return GSON.fromJson(raw, JsonObject.class);
+        } catch (RuntimeException e) {
+            throw new NotifierException("Notifier API returned a response that could not be parsed");
         }
     }
 
@@ -880,23 +1527,24 @@ public class NotifierApi implements AutoCloseable {
      * status. Transport-level failures (no body) become an {@link HttpException}.
      */
     private NotifierException toException(int code, JsonElement parsed) {
-        String message = "HTTP " + code;
         int businessCode = 0;
         boolean hasError = false;
         if (parsed != null && parsed.isJsonObject()) {
             JsonObject obj = parsed.getAsJsonObject();
-            if (obj.has("error")) {
-                message = obj.get("error").getAsString();
-                hasError = true;
-            }
+            hasError = obj.has("error");
             if (obj.has("code")) {
                 businessCode = parseErrorCode(obj.get("code"));
             }
         }
+        // Never copy the server's free-text `error` into the exception: it is attacker- and
+        // template-influenced and could echo rendered content. Callers branch on the type and
+        // code, not on message text.
+        String message = "Notifier API error (HTTP " + code
+                + (businessCode != 0 ? ", code " + businessCode : "") + ")";
         if (hasError) {
             return new ApiException(message, businessCode != 0 ? businessCode : code);
         }
-        return new HttpException(message, code);
+        return new HttpException("HTTP " + code, code);
     }
 
     private static int parseErrorCode(JsonElement code) {

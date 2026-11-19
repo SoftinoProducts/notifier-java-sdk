@@ -16,8 +16,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -39,6 +41,7 @@ public class ContractTest {
     private HttpServer server;
     private String baseUrl;
     private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
+    private final List<AutoCloseable> clients = new ArrayList<AutoCloseable>();
 
     @Before
     public void start() throws IOException {
@@ -52,9 +55,23 @@ public class ContractTest {
 
     @After
     public void stop() {
+        // Close clients before stopping the server: an idle keep-alive connection can make
+        // HttpServer.stop(0) block on some JDK 8 builds.
+        for (AutoCloseable client : clients) {
+            try {
+                client.close();
+            } catch (Exception ignored) {
+                // close is best-effort in a test teardown
+            }
+        }
         if (server != null) {
             server.stop(0);
         }
+    }
+
+    private <T extends AutoCloseable> T track(T client) {
+        clients.add(client);
+        return client;
     }
 
     private void handleNotifications(HttpExchange ex) throws IOException {
@@ -135,7 +152,7 @@ public class ContractTest {
 
     @Test
     public void send_roundTrip() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         SendResult r = api.send(ChannelType.SMS, "+989120000000", Content.of("Your OTP is 1234"));
         assertNotNull(r.getId());
         assertEquals("queued", r.getStatus());
@@ -145,7 +162,7 @@ public class ContractTest {
 
     @Test
     public void bulk_roundTrip() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         BulkResult b = api.bulk(ChannelType.SMS, Arrays.asList(
                 RecipientMessage.of("+989120000000", Content.of("one")),
                 RecipientMessage.of("+989121111111", Content.of("two"))));
@@ -155,7 +172,7 @@ public class ContractTest {
 
     @Test
     public void statusByProviderMessageId_roundTrip() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         StatusResult s = api.statusByProviderMessageId("12345678");
         assertTrue(s.isDelivered());
         assertEquals("kavenegar", s.getProvider());
@@ -165,7 +182,7 @@ public class ContractTest {
 
     @Test
     public void kavenegarFacade_statusByLong() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         com.softino.notifier.kavenegar.models.StatusResult s = api.status(12345678L);
         assertEquals(com.softino.notifier.kavenegar.enums.MessageStatus.Delivered, s.getStatus());
         assertEquals("تحویل شد", s.getStatusText());      // mapped kavenegar-style statusText
@@ -182,12 +199,14 @@ public class ContractTest {
         });
         errServer.start();
         try {
-            NotifierApi api = new NotifierApi("test-key", "http://127.0.0.1:" + errServer.getAddress().getPort());
+            NotifierApi api = track(new NotifierApi("test-key", "http://127.0.0.1:" + errServer.getAddress().getPort()));
             try {
                 api.send(ChannelType.SMS, "+989120000000", Content.of("hi"));
                 fail("expected ApiException");
             } catch (ApiException ex) {
-                assertEquals("duplicate idempotency key", ex.getMessage());
+                assertEquals(422, ex.getCode());
+                assertTrue("the server's free-text error must not be copied into the exception",
+                        !ex.getMessage().contains("duplicate idempotency key"));
             }
         } finally {
             errServer.stop(0);
@@ -196,7 +215,7 @@ public class ContractTest {
 
     @Test
     public void sendOptions_templateVarsAreTransmitted() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         SendOptions opts = SendOptions.builder()
                 .templateId("otp-template")
                 .templateVar("token", "123456")
@@ -212,7 +231,7 @@ public class ContractTest {
     // are, and the flag must actually reach the wire.
     @Test
     public void sendOptions_simulatedIsTransmitted() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         SendOptions opts = SendOptions.builder().simulated(true).build();
         api.sendTemplate(ChannelType.SMS, "+989120000000", "verify",
                 Collections.singletonMap("token", "123456"), opts);
@@ -223,7 +242,7 @@ public class ContractTest {
 
     @Test
     public void sendOptions_simulatedIsOmittedWhenFalse() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth",
                 Collections.singletonMap("token", "777"),
                 SendOptions.builder().locale("fa").build());
@@ -232,7 +251,7 @@ public class ContractTest {
 
     @Test
     public void bulk_simulatedBatchFlagAndPerMessageOverride() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         RecipientMessage inherits = RecipientMessage.builder()
                 .recipient("+989120000001")
                 .content(Content.of("rehearsal"))
@@ -252,14 +271,14 @@ public class ContractTest {
 
     @Test
     public void statusResult_reportsSimulated() throws IOException {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         SendResult r = api.send(ChannelType.SMS, "+989120000000", "hello");
         assertFalse("a normal send reports simulated=false", r.isSimulated());
     }
 
     @Test
     public void sendTemplateByName_sendsTemplateName() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth",
                 Collections.singletonMap("token", "777"));
         String body = lastRequestBody.get();
@@ -271,7 +290,7 @@ public class ContractTest {
     // migration to the NotifierApi interface is needed.
     @Test
     public void verifyLookup_simulatedOverloadIsTransmitted() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "123456", "sms-group:verify", true);
 
         String body = lastRequestBody.get();
@@ -282,7 +301,7 @@ public class ContractTest {
 
     @Test
     public void verifyLookup_simulatedWithToken2AndToken3() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "1", "2", "3", "order_notice", true);
 
         String body = lastRequestBody.get();
@@ -292,7 +311,7 @@ public class ContractTest {
 
     @Test
     public void verifyLookup_simulatedWithNamedParams() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "", "", "", "verify",
                 Collections.singletonList(new PairValue("token", "998877")), true);
 
@@ -303,7 +322,7 @@ public class ContractTest {
 
     @Test
     public void verifyLookup_simulatedFalseIsOmitted() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "123456", "verify", false);
         assertFalse("an explicit false must not send the flag", lastRequestBody.get().contains("simulated"));
     }
@@ -311,7 +330,7 @@ public class ContractTest {
     // The overloads without the flag keep their exact previous behaviour.
     @Test
     public void verifyLookup_withoutFlagIsUnchanged() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "123456", "verify");
 
         String body = lastRequestBody.get();
@@ -322,7 +341,7 @@ public class ContractTest {
 
     @Test
     public void listNotifications_returnsPageAndCursor() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         HistoryPage page = api.listNotifications(HistoryQuery.builder().limit(5).status("delivered").build());
         assertNotNull(page);
         assertEquals(1, page.getItems().size());
@@ -333,7 +352,7 @@ public class ContractTest {
 
     @Test
     public void sendTemplateByNamePositional_emitsTemplateParams() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "betaauth", "123456", "extra");
         String body = lastRequestBody.get();
         assertTrue("should reference template by name", body.contains("\"template_name\":\"betaauth\""));
@@ -343,7 +362,7 @@ public class ContractTest {
 
     @Test
     public void sendTemplateByName_groupTemplate_emitsGroupName() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "sms-sale:verify",
                 Collections.singletonMap("token", "777"));
         String body = lastRequestBody.get();
@@ -354,7 +373,7 @@ public class ContractTest {
 
     @Test
     public void sendTemplateByNamePositional_groupTemplate_emitsGroupNameAndParams() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "sms-otp:betaauth", "123456");
         String body = lastRequestBody.get();
         assertTrue("positional by-name send should support 'group:template' shorthand",
@@ -365,7 +384,7 @@ public class ContractTest {
 
     @Test
     public void verifyLookup_groupTemplate_emitsGroupName() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "123456", "sms-sale:verify");
         String body = lastRequestBody.get();
         assertTrue("should reference the group by name", body.contains("\"group_name\":\"sms-sale\""));
@@ -376,7 +395,7 @@ public class ContractTest {
     // The call site keeps its signature; only the string changes.
     @Test
     public void sendTemplateByName_routeShorthand_emitsRouteNameAndOmitsChannelType() {
-        NotifierApi api = new NotifierApi("test-key", baseUrl);
+        NotifierApi api = track(new NotifierApi("test-key", baseUrl));
         api.sendTemplateByName(ChannelType.SMS, "+989120000000", "route:otp", "123456");
         String body = lastRequestBody.get();
         assertTrue(body.contains("\"route_name\":\"otp\""));
@@ -387,7 +406,7 @@ public class ContractTest {
 
     @Test
     public void verifyLookup_routeShorthand_keepsFacadeSignature() {
-        KavenegarApi api = new KavenegarApi("test-key", baseUrl);
+        KavenegarApi api = track(new KavenegarApi("test-key", baseUrl));
         api.verifyLookup("+989120000000", "123456", "route:otp");
         String body = lastRequestBody.get();
         assertTrue(body.contains("\"route_name\":\"otp\""));

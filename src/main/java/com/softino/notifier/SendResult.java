@@ -31,6 +31,10 @@ public final class SendResult {
     private final String fanoutId;
     private final String fanoutStatus;
 
+    // Set by the async path: the idempotency key that went on the wire (consumer-supplied or
+    // SDK-generated), so a caller can correlate the result with the hub's record.
+    private final String idempotencyKey;
+
     public SendResult(String id, String status, String channelType, String recipient,
                       String subject, String body, String sendAt, String createdAt, String updatedAt) {
         this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt, null, null, null, false);
@@ -54,6 +58,14 @@ public final class SendResult {
                       String subject, String body, String sendAt, String createdAt, String updatedAt,
                       String provider, String providerMessageId, String error, boolean simulated,
                       String fanoutId, String fanoutStatus) {
+        this(id, status, channelType, recipient, subject, body, sendAt, createdAt, updatedAt,
+                provider, providerMessageId, error, simulated, fanoutId, fanoutStatus, null);
+    }
+
+    public SendResult(String id, String status, String channelType, String recipient,
+                      String subject, String body, String sendAt, String createdAt, String updatedAt,
+                      String provider, String providerMessageId, String error, boolean simulated,
+                      String fanoutId, String fanoutStatus, String idempotencyKey) {
         this.id = id;
         this.status = status;
         this.channelType = channelType;
@@ -69,6 +81,7 @@ public final class SendResult {
         this.simulated = simulated;
         this.fanoutId = fanoutId;
         this.fanoutStatus = fanoutStatus;
+        this.idempotencyKey = idempotencyKey;
     }
 
     // ---- Core accessors ----
@@ -90,6 +103,21 @@ public final class SendResult {
     public String getFanoutId() { return fanoutId; }
     /** Aggregate fanout status (queued, delivered, failed, partial, skipped), otherwise null. */
     public String getFanoutStatus() { return fanoutStatus; }
+
+    /**
+     * The idempotency key that accompanied this send on the async path (consumer-supplied or
+     * SDK-generated). Null for the legacy blocking path and for sends where no key applied.
+     */
+    public String getIdempotencyKey() { return idempotencyKey; }
+
+    /** Copy with the resolved idempotency key; used by the async engine after a 2xx response. */
+    public SendResult withIdempotencyKey(String key) {
+        if (key == null || key.equals(this.idempotencyKey)) {
+            return this;
+        }
+        return new SendResult(id, status, channelType, recipient, subject, body, sendAt, createdAt,
+                updatedAt, provider, providerMessageId, error, simulated, fanoutId, fanoutStatus, key);
+    }
 
     /**
      * Kavenegar-compat alias. In Notifier the identifier is a UUID, so this returns the

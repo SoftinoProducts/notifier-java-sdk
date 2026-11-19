@@ -16,4 +16,14 @@ public class HttpException extends NotifierException {
     public int getCode() {
         return code;
     }
+
+    /**
+     * Transport-level 408/429/5xx responses are transient; other statuses and plain network
+     * failures are not necessarily safe to retry. Kept for the blocking API, whose behaviour
+     * is otherwise unchanged.
+     */
+    @Override
+    public boolean isRetryable() {
+        return code == 408 || code == 429 || code >= 500;
+    }
 }

@@ -53,6 +53,9 @@ public class TradeHubCompatTest {
 
     @After
     public void stop() {
+        if (api != null) {
+            api.close();
+        }
         if (server != null) {
             server.stop(0);
         }
